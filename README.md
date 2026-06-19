@@ -52,6 +52,17 @@ This runs the worker in a hidden child process and the dashboard in the current 
 
 Open `http://127.0.0.1:8080/login`. The prepared local username is `admin`; its generated password is the `RRPP_DASHBOARD_PASSWORD` value in the ignored `.env` file.
 
+## Gmail read-only connector
+
+Place the installed-application OAuth client at `secrets/gmail-oauth-client.json`, then authorize once:
+
+```powershell
+.\.venv\Scripts\rrpp-bridge.exe gmail-auth
+.\.venv\Scripts\rrpp-bridge.exe gmail-poll --once
+```
+
+The requested scope is only `gmail.readonly`. Credentials remain under ignored `secrets/`; the connector reads `INBOX`, never sends, deletes, archives, labels, marks read, or otherwise changes email. After authorization, `scripts/run-local.ps1` automatically starts the Gmail poller beside web and worker.
+
 ## Tests
 
 ```powershell

@@ -42,6 +42,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 - Evidence: configuration tests, successful editable installation and build, CLI status, and HTTP login smoke test.
 - Implication: Local onboarding requires only Python 3.12; runtime credentials and data remain ignored and machine-local.
 
+### 2026-06-19 - Gmail read-only connector
+
+- Status: Verified
+- Area: inbound connectors
+- Fact: Gmail ingestion uses only the `gmail.readonly` OAuth scope, stores credentials under ignored `secrets/`, and persists a `historyId` cursor only after durable message ingestion.
+- Evidence: ADR-0004, migration 003, Gmail adapter/connector tests, and successful real inbox synchronization.
+- Implication: The connector may read message content from `INBOX` but cannot mutate the mailbox; future outbound email requires a separate ADR and authorization scope.
+
 ### 2026-06-19 - Repository baseline
 
 - Status: Verified

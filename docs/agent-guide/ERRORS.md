@@ -79,3 +79,11 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Cause: Disabling build isolation also bypassed discovery and installation of an editable-only build requirement.
 - Correction: Install the helper in the project virtual environment, then verify both editable installation and the generated CLI entry point.
 - Prevention: Use normal build isolation for editable installs unless every dynamic build requirement has been explicitly provisioned and verified.
+
+### 2026-06-19 - Migration tests hard-coded the previous latest version
+
+- Context: Adding the Gmail connector state migration.
+- Error: Existing tests expected exactly migrations 1 and 2; assertion failure occurred before closing SQLite connections, causing Windows cleanup errors.
+- Cause: Tests encoded a moving implementation count and did not protect resource cleanup with `finally`.
+- Correction: Expected ranges derive from `latest_version()`, and database connections always close through `finally` blocks.
+- Prevention: Migration tests may pin their starting version but must derive the target version and guarantee cleanup on assertion failure.

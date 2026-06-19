@@ -11,7 +11,7 @@ from importlib import resources
 from pathlib import Path
 
 from rrpp_bridge.config import Settings, load_local_env
-from rrpp_bridge.db import backup_database, connect, current_version, initialize
+from rrpp_bridge.db import backup_database, connect, current_version, initialize, latest_version
 from rrpp_bridge.executor import Executor
 from rrpp_bridge.queue import JobQueue
 from rrpp_bridge.runtime import get_mode, initialize_mode, set_mode
@@ -147,30 +147,36 @@ class MigrationTests(unittest.TestCase):
     def test_version_one_database_upgrades_without_data_loss(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn = connect(Path(tmp) / "legacy.db")
-            sql = resources.files("rrpp_bridge.sql").joinpath("001_initial.sql").read_text(encoding="utf-8")
-            conn.executescript(sql)
-            conn.execute("INSERT INTO schema_migrations VALUES(1,datetime('now'))")
-            conn.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                         ("evt_old", "local", "old", "a", "b", "", "body", "now", "now", "{}", "local:a:b", "queued"))
-            self.assertEqual([2], initialize(conn))
-            self.assertEqual(2, current_version(conn))
-            self.assertEqual("evt_old", conn.execute("SELECT id FROM events").fetchone()[0])
-            conn.close()
+            try:
+                sql = resources.files("rrpp_bridge.sql").joinpath("001_initial.sql").read_text(encoding="utf-8")
+                conn.executescript(sql)
+                conn.execute("INSERT INTO schema_migrations VALUES(1,datetime('now'))")
+                conn.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                             ("evt_old", "local", "old", "a", "b", "", "body", "now", "now", "{}", "local:a:b", "queued"))
+                self.assertEqual(list(range(2, latest_version() + 1)), initialize(conn))
+                self.assertEqual(latest_version(), current_version(conn))
+                self.assertEqual("evt_old", conn.execute("SELECT id FROM events").fetchone()[0])
+            finally:
+                conn.close()
 
     def test_sqlite_backup_contains_wal_commits_and_initialize_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "source.db"
             conn = connect(path)
-            self.assertEqual([1, 2], initialize(conn))
-            initialize_mode(conn, "shadow")
-            conn.execute("INSERT INTO audit_log VALUES(NULL,?,?,?,?,?,?,?)",
-                         ("now", "test", "backup", "database", "db", "ok", "{}"))
-            backup = backup_database(path)
-            self.assertEqual([], initialize(conn))
-            copied = connect(backup)
-            self.assertEqual(1, copied.execute("SELECT count(*) FROM audit_log").fetchone()[0])
-            copied.close()
-            conn.close()
+            try:
+                self.assertEqual(list(range(1, latest_version() + 1)), initialize(conn))
+                initialize_mode(conn, "shadow")
+                conn.execute("INSERT INTO audit_log VALUES(NULL,?,?,?,?,?,?,?)",
+                             ("now", "test", "backup", "database", "db", "ok", "{}"))
+                backup = backup_database(path)
+                self.assertEqual([], initialize(conn))
+                copied = connect(backup)
+                try:
+                    self.assertEqual(1, copied.execute("SELECT count(*) FROM audit_log").fetchone()[0])
+                finally:
+                    copied.close()
+            finally:
+                conn.close()
 
 
 class ConfigTests(unittest.TestCase):
