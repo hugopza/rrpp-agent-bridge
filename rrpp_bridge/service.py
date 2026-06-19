@@ -14,6 +14,7 @@ def ingest_local(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[str
     return JobQueue(conn).enqueue(normalize(payload))
 
 
-def process_one(conn: sqlite3.Connection, mode: str, worker_id: str = "worker.local",
-                max_attempts: int = 3) -> bool:
-    return Executor(conn, mode, max_attempts).run_once(worker_id)
+def process_one(conn: sqlite3.Connection, worker_id: str = "worker.local",
+                max_attempts: int = 3, lease_seconds: int = 60,
+                canary_senders: frozenset[str] = frozenset()) -> bool:
+    return Executor(conn, max_attempts, lease_seconds, canary_senders).run_once(worker_id)

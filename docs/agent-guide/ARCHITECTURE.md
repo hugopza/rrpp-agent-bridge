@@ -67,6 +67,8 @@ The exact schema requires an accepted ADR, but implementations MUST preserve the
 - `canary`: allow execution only when policy permits and explicit test-user/condition allowlists match.
 - `live`: allow policy-permitted execution; hard restrictions still apply.
 
+In V1, `canary` and `live` execution targets only a network-free local sink. Every result is persisted with `simulated = 1`; this validates mode gating and idempotency without creating an external side effect.
+
 Mode changes MUST be authenticated, validated, and audited. Unknown or missing modes MUST fail closed.
 
 ## Extension Rules
@@ -89,5 +91,7 @@ The V1 implementation maps each architectural responsibility to an explicit comp
 | audit trail | `audit_log` through `rrpp_bridge.audit` | Lifecycle, decisions, errors, and operator operations use correlated structured entries. |
 | process entry points | `rrpp_bridge.cli` | Web and worker are independently runnable processes. |
 | private operations | `rrpp_bridge.web` | Authenticated operational view and local simulator, with CSRF protection. |
+
+SQLite changes are applied through ordered, packaged migrations. Jobs use expiring leases, bounded exponential retry delays, and a terminal dead-letter state. Operators may retry or dismiss terminal jobs through authenticated, audited controls.
 
 An RRPP worker first creates an explicit intended action, then policy decides that action, and only a future external executor may dispatch it.
