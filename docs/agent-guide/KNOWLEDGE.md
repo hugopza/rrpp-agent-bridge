@@ -26,6 +26,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 - Evidence: ADR-0002 and `rrpp_bridge/`.
 - Implication: A real connector or outbound executor requires a new security review and accepted ADR.
 
+### 2026-06-19 - Milestone 1 operational model
+
+- Status: Verified
+- Area: queue and execution
+- Fact: Jobs use expiring leases and bounded exponential backoff; runtime mode is durable; all V1 execution outcomes use an idempotent network-free sink marked simulated.
+- Evidence: migrations 002, `queue.py`, `runtime.py`, `action_executor.py`, and automated tests.
+- Implication: Operators can validate recovery and all safe modes locally, but must not interpret simulated execution as connector readiness.
+
 ### 2026-06-19 - Repository baseline
 
 - Status: Verified

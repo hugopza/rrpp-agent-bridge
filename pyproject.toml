@@ -9,3 +9,9 @@ rrpp-bridge = "rrpp_bridge.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["rrpp_bridge"]
+
+[tool.hatch.build]
+include = ["rrpp_bridge/**/*.py", "rrpp_bridge/sql/*.sql"]

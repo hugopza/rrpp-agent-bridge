@@ -9,6 +9,7 @@ Always read:
 1. [PROJECT_BRIEF.md](PROJECT_BRIEF.md) for product intent and fixed requirements.
 2. [SECURITY.md](SECURITY.md) for non-negotiable safety constraints.
 3. [DECISIONS.md](DECISIONS.md) for accepted and proposed technical decisions.
+4. [ERRORS.md](ERRORS.md) for relevant past mistakes and prevention rules.
 
 Then read the documents relevant to the task:
 

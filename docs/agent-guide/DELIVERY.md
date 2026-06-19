@@ -14,6 +14,8 @@ Deliver the complete local simulator flow, normalized model, durable jobs, indep
 
 Acceptance requires demonstrating the V1 Definition of Done in `PROJECT_BRIEF.md`, including duplicate-event handling and suppression of external execution in safe modes.
 
+Implementation status: feature-complete pending final verification. The delivered foundation includes ordered migrations, lease recovery, bounded backoff, a simulated local execution sink, durable mode control, authenticated recovery controls, correlated detail views, and end-to-end tests.
+
 ## Milestone 2: Read-Only Email Connector
 
 Add a dedicated-inbox adapter using least-privilege environment credentials. Persist before marking ingestion successful, normalize into the existing event model, and display email events in the dashboard.
