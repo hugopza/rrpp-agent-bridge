@@ -14,6 +14,7 @@ class NormalizedEvent:
     body_text: str
     work_key: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    received_at: str | None = None
 
 
 @dataclass(frozen=True)

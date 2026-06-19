@@ -3,6 +3,11 @@ name = "rrpp-agent-bridge"
 version = "0.1.0"
 description = "Safe and observable bridge foundation for future promoter agents"
 requires-python = ">=3.12"
+dependencies = [
+    "google-api-python-client>=2.0,<3",
+    "google-auth-httplib2>=0.2,<1",
+    "google-auth-oauthlib>=1.2,<2",
+]
 
 [project.scripts]
 rrpp-bridge = "rrpp_bridge.cli:main"

@@ -31,7 +31,7 @@ class JobQueue:
                 self.conn.execute(
                     "INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (event_id, event.channel, event.external_message_id, event.sender,
-                     event.recipient, event.subject, event.body_text, timestamp, timestamp,
+                     event.recipient, event.subject, event.body_text, event.received_at or timestamp, timestamp,
                      json.dumps(event.metadata, separators=(",", ":")), event.work_key, "queued"),
                 )
                 self.conn.execute(

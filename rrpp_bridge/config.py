@@ -38,6 +38,10 @@ class Settings:
     max_attempts: int = 3
     lease_seconds: int = 60
     canary_senders: frozenset[str] = frozenset()
+    gmail_client_path: Path = Path("secrets/gmail-oauth-client.json")
+    gmail_token_path: Path = Path("secrets/gmail-token.json")
+    gmail_poll_seconds: int = 60
+    gmail_batch_size: int = 50
 
     @classmethod
     def from_env(cls, *, require_auth: bool = True) -> "Settings":
@@ -57,10 +61,13 @@ class Settings:
             port = int(os.getenv("RRPP_PORT", "8080"))
             max_attempts = int(os.getenv("RRPP_MAX_ATTEMPTS", "3"))
             lease_seconds = int(os.getenv("RRPP_LEASE_SECONDS", "60"))
+            gmail_poll_seconds = int(os.getenv("RRPP_GMAIL_POLL_SECONDS", "60"))
+            gmail_batch_size = int(os.getenv("RRPP_GMAIL_BATCH_SIZE", "50"))
         except ValueError as exc:
             raise ValueError("Port, max attempts, and lease seconds must be integers") from exc
-        if not 1 <= port <= 65535 or max_attempts < 1 or lease_seconds < 5:
-            raise ValueError("Port must be 1-65535, max attempts >= 1, and lease seconds >= 5")
+        if (not 1 <= port <= 65535 or max_attempts < 1 or lease_seconds < 5
+                or gmail_poll_seconds < 15 or not 1 <= gmail_batch_size <= 500):
+            raise ValueError("Invalid port, retry, lease, or Gmail polling configuration")
         canary_senders = frozenset(
             value.strip().casefold() for value in os.getenv("RRPP_CANARY_SENDERS", "").split(",")
             if value.strip()
@@ -76,4 +83,8 @@ class Settings:
             max_attempts=max_attempts,
             lease_seconds=lease_seconds,
             canary_senders=canary_senders,
+            gmail_client_path=Path(os.getenv("RRPP_GMAIL_CLIENT_PATH", "secrets/gmail-oauth-client.json")),
+            gmail_token_path=Path(os.getenv("RRPP_GMAIL_TOKEN_PATH", "secrets/gmail-token.json")),
+            gmail_poll_seconds=gmail_poll_seconds,
+            gmail_batch_size=gmail_batch_size,
         )

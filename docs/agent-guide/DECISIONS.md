@@ -16,6 +16,7 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 | ADR-0001 | Use a persistent agent guide as repository context | Accepted | 2026-06-19 |
 | ADR-0002 | Select the V1 application stack | Accepted | 2026-06-19 |
 | ADR-0003 | Persist runtime mode and allow audited administration | Accepted | 2026-06-19 |
+| ADR-0004 | Use Gmail API as the first read-only connector | Accepted | 2026-06-19 |
 
 ## ADR-0001: Persistent Agent Guide
 
@@ -44,6 +45,16 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 - Alternatives: Environment-only mode changes require service restarts and cannot attribute changes to an operator. A real test connector would introduce external effects before the required security review.
 - Consequences: Both web and worker read the current mode from durable state. All administrative changes and simulated execution outcomes are audited. The local sink is not evidence that an external connector is safe.
 - Validation: Tests cover authentication, CSRF, mode transitions, canary scope, retry/dismiss controls, and the full execution matrix.
+
+## ADR-0004: Gmail API Read-Only Connector
+
+- Status: Accepted
+- Date: 2026-06-19
+- Context: Milestone 2 needs a dedicated Gmail inbox connector with least privilege, durable ingestion, and no mailbox mutation.
+- Decision: Use Google's installed-application OAuth flow and only the `gmail.readonly` scope. Store client and refresh-token material under ignored `secrets/`. Poll Gmail independently from the worker, normalize RFC email into the shared event model, use Gmail message IDs for idempotency, and persist a Gmail `historyId` cursor only after all discovered messages are durably accepted or identified as duplicates.
+- Alternatives: Password/app-password IMAP creates broader credential exposure and weaker API-level scope control. Push notifications add public webhook and cloud messaging infrastructure before polling behavior is proven.
+- Consequences: The connector introduces official Google client libraries and one interactive browser consent. It cannot send, delete, label, archive, mark read, or otherwise mutate Gmail. Expired history cursors recover through a bounded inbox rescan with idempotent ingestion.
+- Validation: Parser, OAuth scope, initial sync, incremental history, cursor safety, duplicate handling, error, and dashboard visibility tests.
 
 ## ADR Template
 

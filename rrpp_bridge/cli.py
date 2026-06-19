@@ -24,12 +24,20 @@ def _prepare(settings: Settings):
 def main() -> None:
     parser = argparse.ArgumentParser(prog="rrpp-bridge")
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("init-db", "migrate", "status", "recover-stale", "web"):
+    for command in ("init-db", "migrate", "status", "recover-stale", "web", "gmail-auth"):
         sub.add_parser(command)
+    gmail_poll = sub.add_parser("gmail-poll")
+    gmail_poll.add_argument("--once", action="store_true")
     worker = sub.add_parser("worker")
     worker.add_argument("--once", action="store_true")
     args = parser.parse_args()
     settings = Settings.from_env(require_auth=args.command == "web")
+
+    if args.command == "gmail-auth":
+        from .gmail_connector import authorize
+        authorize(settings.gmail_client_path, settings.gmail_token_path)
+        print(f"Gmail read-only authorization stored at {settings.gmail_token_path}")
+        return
 
     if args.command == "migrate":
         existed = settings.database_path.exists()
@@ -62,6 +70,11 @@ def main() -> None:
         print(f"Dashboard listening on http://{settings.host}:{settings.port}")
         with make_server(settings.host, settings.port, app) as server:
             server.serve_forever()
+        return
+    if args.command == "gmail-poll":
+        from .gmail_connector import build_service, run_poll_loop
+        run_poll_loop(conn, build_service(settings.gmail_token_path), settings.gmail_batch_size,
+                      settings.gmail_poll_seconds, args.once)
         return
     worker_id = f"worker.{socket.gethostname()}"
     while True:

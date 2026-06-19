@@ -166,19 +166,24 @@ class Application:
             actions = conn.execute("SELECT a.*,p.outcome,p.policy_id FROM actions a JOIN policy_decisions p ON p.action_id=a.id ORDER BY a.created_at DESC LIMIT 20").fetchall()
             audits = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 30").fetchall()
             failures = conn.execute("SELECT * FROM jobs WHERE state='dead_letter' ORDER BY updated_at DESC LIMIT 20").fetchall()
+            gmail_state = conn.execute(
+                "SELECT updated_at FROM connector_state WHERE connector='gmail' AND key='history_id'"
+            ).fetchone()
         finally:
             conn.close()
         metrics = " ".join(f"<strong>{_escape(k)}</strong>: {_escape(counts.get(k, 0))}" for k in ("queued", "processing", "completed", "dead_letter", "dismissed"))
-        event_rows = "".join(f"<tr><td><a href=/events/{_escape(e['id'])}>{_escape(e['id'])}</a></td><td>{_escape(e['sender'])}</td><td>{_escape(e['subject'])}</td><td>{_escape(e['status'])}</td><td>{_escape(e['ingested_at'])}</td></tr>" for e in events) or "<tr><td colspan=5>No events</td></tr>"
+        event_rows = "".join(f"<tr><td><a href=/events/{_escape(e['id'])}>{_escape(e['id'])}</a></td><td>{_escape(e['channel'])}</td><td>{_escape(e['sender'])}</td><td>{_escape(e['subject'])}</td><td>{_escape(e['status'])}</td><td>{_escape(e['ingested_at'])}</td></tr>" for e in events) or "<tr><td colspan=6>No events</td></tr>"
         action_rows = "".join(f"<tr><td><a href=/actions/{_escape(a['id'])}>{_escape(a['id'])}</a></td><td>{_escape(a['type'])}</td><td>{_escape(a['outcome'])}</td><td>{_escape(a['state'])}</td><td>{_escape(a['policy_id'])}</td></tr>" for a in actions) or "<tr><td colspan=5>No actions</td></tr>"
         failure_rows = "".join(f"<tr><td><a href=/jobs/{_escape(j['id'])}>{_escape(j['id'])}</a></td><td>{_escape(j['attempts'])}</td><td>{_escape(j['last_error_code'])}: {_escape(j['last_error_message'])}</td><td><form method=post action=/admin/jobs/{_escape(j['id'])}/retry><input type=hidden name=csrf value='{_escape(csrf)}'><button>Retry</button></form><form method=post action=/admin/jobs/{_escape(j['id'])}/dismiss><input type=hidden name=csrf value='{_escape(csrf)}'><button>Dismiss</button></form></td></tr>" for j in failures) or "<tr><td colspan=4>No failures</td></tr>"
         audit_rows = "".join(f"<tr><td>{_escape(a['occurred_at'])}</td><td>{_escape(a['actor'])}</td><td>{_escape(a['operation'])}</td><td>{_escape(a['outcome'])}</td></tr>" for a in audits) or "<tr><td colspan=4>No activity</td></tr>"
         options = "".join(f"<option value={value}{' selected' if value == mode else ''}>{value}</option>" for value in ("shadow", "dry-run", "canary", "live"))
-        content = f"""<header><h1>RRPP Agent Bridge</h1><p>Mode: <strong>{_escape(mode)}</strong> | {metrics} | executions: {_escape(execution_counts)}</p>
+        gmail_status = (f"cursor active, updated {_escape(gmail_state['updated_at'])}"
+                        if gmail_state else "not synchronized")
+        content = f"""<header><h1>RRPP Agent Bridge</h1><p>Mode: <strong>{_escape(mode)}</strong> | {metrics} | executions: {_escape(execution_counts)}</p><p>Gmail: {gmail_status}</p>
 <form method=post action=/admin/mode><input type=hidden name=csrf value="{_escape(csrf)}"><label>Execution mode <select name=mode>{options}</select></label><button>Change mode</button></form>
 <form method=post action=/logout><input type=hidden name=csrf value="{_escape(csrf)}"><button>Sign out</button></form></header>
 <section><h2>Local simulator</h2><form method=post action=/simulate><input type=hidden name=csrf value="{_escape(csrf)}"><label>External ID <input name=external_message_id required maxlength=200></label><label>Sender <input name=sender required maxlength=200></label><label>Recipient <input name=recipient required maxlength=200></label><label>Subject <input name=subject maxlength=500></label><label>Message <textarea name=body_text required maxlength=20000></textarea></label><button>Persist event</button></form></section>
-<section><h2>Events</h2><table><tr><th>ID</th><th>Sender</th><th>Subject</th><th>Status</th><th>Ingested</th></tr>{event_rows}</table></section>
+<section><h2>Events</h2><table><tr><th>ID</th><th>Channel</th><th>Sender</th><th>Subject</th><th>Status</th><th>Ingested</th></tr>{event_rows}</table></section>
 <section><h2>Actions and policy</h2><table><tr><th>ID</th><th>Type</th><th>Decision</th><th>State</th><th>Policy</th></tr>{action_rows}</table></section>
 <section><h2>Failed jobs</h2><table><tr><th>ID</th><th>Attempts</th><th>Error</th><th>Controls</th></tr>{failure_rows}</table></section>
 <section><h2>Recent activity</h2><table><tr><th>Time</th><th>Actor</th><th>Operation</th><th>Outcome</th></tr>{audit_rows}</table></section>"""
