@@ -258,16 +258,22 @@ class Application:
             f"<small>{_escape(a['actor'])} · {_escape(a['entity_type'])}</small></span>"
             f"<span class='activity-time'>{self._time(a['occurred_at'])}</span></article>" for a in audits
         ) or '<p class="empty">Encara no hi ha activitat.</p>'
-        mode_descriptions = {
-            "shadow": "Observa i registra, però no executa cap acció.",
-            "dry-run": "Calcula què faria i deixa una simulació auditable.",
-            "canary": "Executa el sink simulat només per remitents de prova.",
-            "live": "Permet accions aprovades; en aquesta versió continuen sent simulades.",
+        modes = {
+            "shadow": ("Observació", "Llegeix, processa i registra. No intenta executar cap acció."),
+            "dry-run": ("Simulació", "Decideix què faria i ho registra, però no executa res."),
+            "canary": ("Prova limitada", "Executa només per als remitents de prova autoritzats."),
+            "live": ("Actiu", "Permet executar accions aprovades. Ara mateix l’execució continua sent local i simulada."),
         }
         options = "".join(
-            f'<option value="{value}"{" selected" if value == mode else ""}>{value}</option>'
-            for value in mode_descriptions
+            f'<option value="{value}"{" selected" if value == mode else ""}>{_escape(label)}</option>'
+            for value, (label, _) in modes.items()
         )
+        mode_guide = "".join(
+            f'<li class="mode-item{" current" if value == mode else ""}">'
+            f'<span>{self._badge(value, label)}</span><p>{_escape(description)}</p></li>'
+            for value, (label, description) in modes.items()
+        )
+        mode_label, mode_description = modes[mode]
         gmail_badge = self._badge("success" if gmail_state else "warning",
                                   "Sincronitzat" if gmail_state else "Pendent")
         gmail_time = self._time(gmail_state["updated_at"]) if gmail_state else "Encara sense cursor"
@@ -277,7 +283,7 @@ class Application:
 <div class="app-shell">
   <header class="topbar">
     {self._brand()}
-    <div class="topbar-actions">{self._badge(mode)}
+    <div class="topbar-actions">{self._badge(mode, mode_label)}
       <form method="post" action="/logout" class="inline-form">
         <input type="hidden" name="csrf" value="{_escape(csrf)}">
         <button class="secondary">Tancar sessió</button>
@@ -289,7 +295,7 @@ class Application:
       <p class="eyebrow">Centre d’operacions</p>
       <h1>Tot el que fa l’agent, en un sol lloc.</h1>
       <p class="hero-copy">Supervisa missatges, decisions de política, execucions simulades i errors sense perdre la traçabilitat.</p>
-      <div class="status-row">{self._badge(mode, f'Mode {mode}')}{gmail_badge}
+      <div class="status-row">{self._badge(mode, f'Mode: {mode_label}')}{gmail_badge}
         {self._badge('success', f'{executed} executades')}{self._badge('suppressed', f'{suppressed} suprimides')}</div>
     </section>
     <section class="section" aria-labelledby="overview-title">
@@ -298,13 +304,14 @@ class Application:
     </section>
     <section class="section grid two" aria-label="Configuració operativa">
       <article class="card">
-        <div class="card-header"><div><h2>Mode d’execució</h2><p>Controla fins on pot arribar una acció.</p></div>{self._badge(mode)}</div>
+        <div class="card-header"><div><h2>Mode d’execució</h2><p>Controla fins on pot arribar una acció.</p></div>{self._badge(mode, mode_label)}</div>
         <form method="post" action="/admin/mode" class="mode-form">
           <input type="hidden" name="csrf" value="{_escape(csrf)}">
           <label>Mode actiu<select name="mode">{options}</select></label>
-          <p class="mode-help">{_escape(mode_descriptions[mode])}</p>
+          <p class="mode-help"><strong>{_escape(mode_label)}:</strong> {_escape(mode_description)}</p>
           <button>Canviar mode</button>
         </form>
+        <ul class="mode-guide" aria-label="Explicació dels modes d’execució">{mode_guide}</ul>
       </article>
       <article class="card">
         <div class="card-header"><div><h2>Connector Gmail</h2><p>Entrada oficial en només lectura.</p></div>{gmail_badge}</div>

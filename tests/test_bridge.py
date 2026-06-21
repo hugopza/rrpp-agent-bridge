@@ -243,6 +243,21 @@ class WebTests(unittest.TestCase):
         self.assertIn("Mode d’execució", page)
         self.assertIn("Connector Gmail", page)
 
+    def test_execution_modes_have_clear_catalan_labels_without_changing_values(self):
+        cookie, _ = self.login()
+        _, page = self.request(cookie=cookie)
+        expected = {
+            "shadow": "Observació",
+            "dry-run": "Simulació",
+            "canary": "Prova limitada",
+            "live": "Actiu",
+        }
+        for value, label in expected.items():
+            self.assertIn(f'value="{value}"', page)
+            self.assertIn(label, page)
+        self.assertIn("No intenta executar cap acció", page)
+        self.assertIn("remitents de prova autoritzats", page)
+
     def test_dashboard_escapes_untrusted_message_fields(self):
         conn = connect(self.path)
         ingest_local(conn, BridgeTests.payload("xss", sender="<script>alert(1)</script>"))
