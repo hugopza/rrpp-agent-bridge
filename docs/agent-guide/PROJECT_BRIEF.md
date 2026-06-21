@@ -93,6 +93,15 @@ The design SHOULD allow later adapters for email, Instagram DM, WhatsApp Busines
 - Approval marks a draft prepared and MUST NOT send externally.
 - Keep the audit history in the local phase; bound and paginate dashboard views instead of rendering unbounded lists.
 
+## Confirmed Operational Deployment
+
+- Run web, worker, Gmail polling, and maintenance independently on one host.
+- Keep the VPS dashboard bound to loopback and access it through an SSH tunnel.
+- Persist sanitized service health without exception text, credentials, or message content.
+- Create verified SQLite-native backups daily, retain seven daily and three monthly copies, and prepare public-key-encrypted exports for off-host storage.
+- Keep the backup decryption identity off the VPS.
+- Restore only through an explicit offline CLI operation that creates a safety backup and verifies integrity.
+
 ## V1 Definition of Done
 
 V1 is complete when a local fake message is validated, normalized, durably persisted, independently processed into at least one action, decided by policy, fully audited, and visible in the authenticated dashboard. Safe modes and failures are visible, tests pass, no secrets are committed, and new adapters can reuse the same event-to-action pipeline.

@@ -262,7 +262,7 @@ class MigrationTests(unittest.TestCase):
                              ("act_old", "evt_old", "job_old", "draft_reply", '{"text":"Legacy draft"}', "suppressed", "shadow", "now", "now"))
                 conn.execute("INSERT INTO policy_decisions VALUES(?,?,?,?,?,?)",
                              ("dec_old", "act_old", "allowed", "legacy", "legacy", "now"))
-                self.assertEqual([5], initialize(conn))
+                self.assertEqual(list(range(5, latest_version() + 1)), initialize(conn))
                 self.assertEqual(("pending", "Legacy draft"), tuple(conn.execute(
                     "SELECT status,current_text FROM action_reviews"
                 ).fetchone()))
@@ -286,6 +286,17 @@ class ConfigTests(unittest.TestCase):
             path.write_text("UNSAFE_KEY=value\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_local_env(path)
+
+    def test_backup_timezone_is_validated(self):
+        with patch("rrpp_bridge.config.load_local_env"), patch.dict(
+            "os.environ", {"RRPP_BACKUP_TIMEZONE": "Invalid/Timezone"}, clear=True
+        ):
+            with self.assertRaisesRegex(ValueError, "IANA timezone"):
+                Settings.from_env(require_auth=False)
+        with patch("rrpp_bridge.config.load_local_env"), patch.dict(
+            "os.environ", {"RRPP_BACKUP_TIMEZONE": "Europe/Madrid"}, clear=True
+        ):
+            self.assertEqual("Europe/Madrid", Settings.from_env(require_auth=False).backup_timezone)
 
 class WebTests(unittest.TestCase):
     def setUp(self):
@@ -412,12 +423,13 @@ class WebTests(unittest.TestCase):
         self.assertIn("independent-worker", page)
 
     def test_operational_pages_are_private_bounded_and_filterable(self):
-        for path in ("/conversations", "/reviews", "/activity", "/venues"):
+        for path in ("/conversations", "/reviews", "/activity", "/venues", "/system"):
             anonymous, _ = self.request(path)
             self.assertEqual("303 See Other", anonymous["status"])
         cookie, _ = self.login()
         for path, label in (("/conversations", "Converses"), ("/reviews", "Cua de revisió"),
-                            ("/activity", "50 registres per pàgina"), ("/venues", "Nova discoteca")):
+                            ("/activity", "50 registres per pàgina"), ("/venues", "Nova discoteca"),
+                            ("/system", "Salut dels processos")):
             result, page = self.request(path, cookie=cookie)
             self.assertEqual("200 OK", result["status"])
             self.assertIn(label, page)

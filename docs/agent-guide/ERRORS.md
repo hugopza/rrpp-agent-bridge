@@ -16,6 +16,30 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-06-21 - PowerShell expanded container shell substitutions
+
+- Context: Running an ephemeral `age` verification through `docker run ... sh -c` on Windows.
+- Error: PowerShell evaluated `$(id -u)`, `$(age-keygen ...)`, and `$(age ...)` on the host before the command reached the Linux container.
+- Cause: A double-quoted PowerShell argument contained command-substitution syntax intended for the inner POSIX shell.
+- Correction: Use a PowerShell-literal outer argument and files for intermediate values so only the container shell interprets its syntax.
+- Prevention: Cross-shell smoke commands must avoid nested interpolation; prefer argument arrays or literal outer quoting and verify which shell owns every substitution.
+
+### 2026-06-21 - Compose built the same image concurrently
+
+- Context: Building the shared runtime image for web, worker, and maintenance services.
+- Error: BuildKit exported several identical build targets to `rrpp-agent-bridge:local` concurrently and failed with `image already exists`.
+- Cause: The shared Compose anchor gave every service both the same `build` definition and the same image tag.
+- Correction: Only the web service owns the build definition; all other services reference the resulting immutable local image.
+- Prevention: In Compose, define one build owner per shared image tag and make sibling services image-only consumers.
+
+### 2026-06-21 - Windows lacked IANA timezone data
+
+- Context: Scheduling backups at 03:00 in `Europe/Madrid` with the standard-library `zoneinfo` API.
+- Error: The local Windows Python installation raised `ZoneInfoNotFoundError` because it had no IANA timezone database.
+- Cause: The implementation assumed that operating-system timezone files were available on every supported platform.
+- Correction: Add the cross-platform `tzdata` package as an explicit runtime dependency and test the configured timezone during setup.
+- Prevention: Any named IANA timezone used by Windows-supported code requires an explicit timezone-data dependency and a startup validation test.
+
 ### 2026-06-21 - Failed startup validation leaked SQLite connection
 
 - Context: Testing that runtime startup rejects an existing outdated database.

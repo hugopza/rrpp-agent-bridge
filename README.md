@@ -31,6 +31,8 @@ The dashboard provides a bounded overview plus dedicated views for conversations
 
 Docker is not required. The web process and worker use the same SQLite database and should run in separate terminals. The dashboard can change the durable execution mode, retry dead-letter jobs, and dismiss terminal failures. All V1 execution records target a network-free local sink and are marked as simulated.
 
+`scripts/run-local.ps1` also starts the Gmail poller when authorized and the maintenance process for health reporting and scheduled backups. The `Sistema` view shows service heartbeats and recovery status.
+
 Useful operational commands:
 
 ```powershell
@@ -41,6 +43,17 @@ python -m rrpp_bridge worker --once
 ```
 
 `migrate` creates a consistent SQLite backup before applying pending migrations. Existing databases never migrate during normal startup; web, worker, and poller processes stop with an explicit instruction if this command is required. Automatic retries use bounded exponential backoff. Expired worker leases are recovered automatically and can also be recovered explicitly with the CLI.
+
+Operational commands:
+
+```powershell
+python -m rrpp_bridge backup create --kind manual
+python -m rrpp_bridge backup verify backups\BACKUP.db
+python -m rrpp_bridge restore backups\BACKUP.db --confirm RESTORE
+python -m rrpp_bridge maintenance --once
+```
+
+For the private Docker/VPS topology, backup encryption, SSH access, and restore procedure, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 `RRPP_CANARY_SENDERS` is a comma-separated allowlist used only in `canary` mode. Even `live` uses the simulated local sink in V1; adding a real external executor requires a separate security review and ADR.
 

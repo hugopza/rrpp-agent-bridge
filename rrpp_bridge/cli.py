@@ -2,16 +2,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import socket
 import time
+from pathlib import Path
+from urllib.request import urlopen
 from wsgiref.simple_server import make_server
 
 from .config import Settings
 from .db import backup_database, connect, current_version, initialize, latest_version, prepare_runtime
 from .queue import JobQueue
+from .operations import (create_backup, instance_id, restore_backup, run_maintenance,
+                         service_health, start_service, stop_service, verify_backup,
+                         heartbeat)
 from .runtime import get_mode, initialize_mode
 from .service import process_one
 from .web import Application
+
+
+class GracefulShutdown(Exception):
+    pass
+
+
+def _install_shutdown_handlers() -> None:
+    def shutdown(_signum, _frame):
+        raise GracefulShutdown()
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
 
 
 def _prepare(settings: Settings):
@@ -34,6 +51,20 @@ def main() -> None:
     gmail_poll.add_argument("--once", action="store_true")
     worker = sub.add_parser("worker")
     worker.add_argument("--once", action="store_true")
+    maintenance = sub.add_parser("maintenance")
+    maintenance.add_argument("--once", action="store_true")
+    backup = sub.add_parser("backup")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    backup_create = backup_sub.add_parser("create")
+    backup_create.add_argument("--kind", choices=("manual", "daily", "monthly"), default="manual")
+    backup_verify = backup_sub.add_parser("verify")
+    backup_verify.add_argument("path")
+    restore = sub.add_parser("restore")
+    restore.add_argument("path")
+    restore.add_argument("--confirm", required=True)
+    restore.add_argument("--identity")
+    healthcheck = sub.add_parser("healthcheck")
+    healthcheck.add_argument("service", choices=("web", "worker", "gmail", "maintenance"))
     args = parser.parse_args()
     settings = Settings.from_env(require_auth=args.command == "web")
 
@@ -41,6 +72,26 @@ def main() -> None:
         from .gmail_connector import authorize
         authorize(settings.gmail_client_path, settings.gmail_token_path)
         print(f"Gmail read-only authorization stored at {settings.gmail_token_path}")
+        return
+
+    if args.command == "backup":
+        if args.backup_command == "verify":
+            info = verify_backup(Path(args.path))
+        else:
+            info = create_backup(
+                settings.database_path, settings.backup_dir, args.kind,
+                export_dir=settings.backup_export_dir,
+                age_recipient=settings.backup_age_recipient,
+            )
+        print(json.dumps({"path": str(info.path), "size_bytes": info.size_bytes,
+                          "sha256": info.sha256, "encrypted_path": str(info.encrypted_path) if info.encrypted_path else None}))
+        return
+
+    if args.command == "restore":
+        safety = restore_backup(settings.database_path, Path(args.path), settings.backup_dir,
+                                confirmation=args.confirm,
+                                identity=Path(args.identity) if args.identity else None)
+        print(json.dumps({"restored": str(args.path), "safety_backup": str(safety)}))
         return
 
     if args.command == "migrate":
@@ -51,9 +102,25 @@ def main() -> None:
         applied = initialize(conn)
         initialize_mode(conn, settings.mode)
         print(json.dumps({"applied": applied, "backup": str(backup) if backup else None}))
+        conn.close()
         return
 
     conn = _prepare(settings)
+    if args.command == "healthcheck":
+        if args.service == "web":
+            try:
+                with urlopen(f"http://127.0.0.1:{settings.port}/login", timeout=3) as response:
+                    healthy = response.status == 200
+            except OSError:
+                healthy = False
+            state = "healthy" if healthy else "unreachable"
+        else:
+            row = conn.execute("SELECT * FROM service_status WHERE service=?", (args.service,)).fetchone()
+            state = service_health(row, gmail_poll_seconds=settings.gmail_poll_seconds)
+            healthy = state == "healthy"
+        print(json.dumps({"service": args.service, "status": state}))
+        conn.close()
+        raise SystemExit(0 if healthy else 1)
     if args.command == "init-db":
         print(f"Initialized {settings.database_path} at schema version {current_version(conn)}")
         return
@@ -61,8 +128,10 @@ def main() -> None:
         counts = {row["state"]: row["count"] for row in conn.execute(
             "SELECT state,count(*) count FROM jobs GROUP BY state"
         )}
+        services = {row["service"]: service_health(row, gmail_poll_seconds=settings.gmail_poll_seconds)
+                    for row in conn.execute("SELECT * FROM service_status")}
         print(json.dumps({"database": str(settings.database_path), "schema": current_version(conn),
-                          "mode": get_mode(conn), "jobs": counts}, sort_keys=True))
+                          "mode": get_mode(conn), "jobs": counts, "services": services}, sort_keys=True))
         return
     if args.command == "recover-stale":
         recovered = JobQueue(conn).recover_stale(settings.max_attempts, "cli.recover-stale")
@@ -75,19 +144,55 @@ def main() -> None:
         with make_server(settings.host, settings.port, app) as server:
             server.serve_forever()
         return
+    if args.command == "maintenance":
+        conn.close()
+        _install_shutdown_handlers()
+        try:
+            run_maintenance(settings, once=args.once)
+        except GracefulShutdown:
+            pass
+        return
     if args.command == "gmail-poll":
         from .gmail_connector import build_service, run_poll_loop
-        run_poll_loop(conn, build_service(settings.gmail_token_path), settings.gmail_batch_size,
-                      settings.gmail_poll_seconds, args.once)
+        instance = instance_id("gmail")
+        start_service(conn, "gmail", instance)
+        _install_shutdown_handlers()
+        try:
+            service = build_service(settings.gmail_token_path)
+            run_poll_loop(conn, service, settings.gmail_batch_size,
+                          settings.gmail_poll_seconds, args.once, instance)
+        except GracefulShutdown:
+            pass
+        except Exception as exc:
+            heartbeat(conn, "gmail", instance, error=exc)
+            raise
+        finally:
+            stop_service(conn, "gmail", instance)
+            conn.close()
         return
     worker_id = f"worker.{socket.gethostname()}"
-    while True:
-        processed = process_one(conn, worker_id, settings.max_attempts,
-                                settings.lease_seconds, settings.canary_senders)
-        if args.once:
-            break
-        if not processed:
-            time.sleep(1)
+    instance = instance_id("worker")
+    start_service(conn, "worker", instance)
+    _install_shutdown_handlers()
+    last_heartbeat = 0.0
+    try:
+        while True:
+            processed = process_one(conn, worker_id, settings.max_attempts,
+                                    settings.lease_seconds, settings.canary_senders)
+            now = time.monotonic()
+            if processed or now - last_heartbeat >= 10:
+                heartbeat(conn, "worker", instance, success=processed,
+                          details={"processed": bool(processed)})
+                last_heartbeat = now
+            if args.once:
+                break
+            if not processed:
+                time.sleep(1)
+    except GracefulShutdown:
+        pass
+    finally:
+        stop_service(conn, "worker", instance)
+        conn.close()
 
 
 if __name__ == "__main__":

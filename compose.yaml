@@ -1,0 +1,79 @@
+x-rrpp-service: &rrpp-service
+  image: rrpp-agent-bridge:local
+  env_file:
+    - ${RRPP_ENV_FILE:-.env.docker}
+  environment:
+    RRPP_DATABASE_PATH: ${RRPP_DATABASE_PATH:-var/rrpp-bridge.db}
+    RRPP_BACKUP_DIR: ${RRPP_BACKUP_DIR:-/app/backups}
+    RRPP_BACKUP_EXPORT_DIR: ${RRPP_BACKUP_EXPORT_DIR:-/app/backup-export}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 30s
+  volumes:
+    - ./var:/app/var
+    - ./backups:/app/backups
+    - ./backup-export:/app/backup-export
+
+services:
+  web:
+    <<: *rrpp-service
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:${RRPP_PUBLIC_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "rrpp-bridge", "healthcheck", "web"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    <<: *rrpp-service
+    command: ["rrpp-bridge", "worker"]
+    healthcheck:
+      test: ["CMD", "rrpp-bridge", "healthcheck", "worker"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  maintenance:
+    <<: *rrpp-service
+    command: ["rrpp-bridge", "maintenance"]
+    healthcheck:
+      test: ["CMD", "rrpp-bridge", "healthcheck", "maintenance"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  gmail:
+    <<: *rrpp-service
+    profiles: ["gmail"]
+    command: ["rrpp-bridge", "gmail-poll"]
+    volumes:
+      - ./var:/app/var
+      - ./backups:/app/backups
+      - ./backup-export:/app/backup-export
+      - ./secrets/gmail-oauth-client.json:/app/config-secrets/gmail-oauth-client.json:ro
+      - ./runtime-secrets:/app/runtime-secrets
+    healthcheck:
+      test: ["CMD", "rrpp-bridge", "healthcheck", "gmail"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  migrate:
+    <<: *rrpp-service
+    profiles: ["tools"]
+    restart: "no"
+    command: ["rrpp-bridge", "migrate"]

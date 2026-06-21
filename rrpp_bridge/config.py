@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 VALID_MODES = frozenset({"shadow", "dry-run", "canary", "live"})
 ENV_KEY = re.compile(r"^RRPP_[A-Z0-9_]+$")
@@ -42,6 +43,11 @@ class Settings:
     gmail_token_path: Path = Path("secrets/gmail-token.json")
     gmail_poll_seconds: int = 60
     gmail_batch_size: int = 50
+    backup_dir: Path = Path("backups")
+    backup_export_dir: Path = Path("backup-export")
+    backup_age_recipient: str = ""
+    backup_hour: int = 3
+    backup_timezone: str = "Europe/Madrid"
 
     @classmethod
     def from_env(cls, *, require_auth: bool = True) -> "Settings":
@@ -63,15 +69,22 @@ class Settings:
             lease_seconds = int(os.getenv("RRPP_LEASE_SECONDS", "60"))
             gmail_poll_seconds = int(os.getenv("RRPP_GMAIL_POLL_SECONDS", "60"))
             gmail_batch_size = int(os.getenv("RRPP_GMAIL_BATCH_SIZE", "50"))
+            backup_hour = int(os.getenv("RRPP_BACKUP_HOUR", "3"))
         except ValueError as exc:
             raise ValueError("Port, max attempts, and lease seconds must be integers") from exc
         if (not 1 <= port <= 65535 or max_attempts < 1 or lease_seconds < 5
-                or gmail_poll_seconds < 15 or not 1 <= gmail_batch_size <= 500):
+                or gmail_poll_seconds < 15 or not 1 <= gmail_batch_size <= 500
+                or not 0 <= backup_hour <= 23):
             raise ValueError("Invalid port, retry, lease, or Gmail polling configuration")
         canary_senders = frozenset(
             value.strip().casefold() for value in os.getenv("RRPP_CANARY_SENDERS", "").split(",")
             if value.strip()
         )
+        backup_timezone = os.getenv("RRPP_BACKUP_TIMEZONE", "Europe/Madrid")
+        try:
+            ZoneInfo(backup_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("RRPP_BACKUP_TIMEZONE must be a valid IANA timezone") from exc
         return cls(
             database_path=Path(os.getenv("RRPP_DATABASE_PATH", "var/rrpp-bridge.db")),
             mode=mode,
@@ -87,4 +100,9 @@ class Settings:
             gmail_token_path=Path(os.getenv("RRPP_GMAIL_TOKEN_PATH", "secrets/gmail-token.json")),
             gmail_poll_seconds=gmail_poll_seconds,
             gmail_batch_size=gmail_batch_size,
+            backup_dir=Path(os.getenv("RRPP_BACKUP_DIR", "backups")),
+            backup_export_dir=Path(os.getenv("RRPP_BACKUP_EXPORT_DIR", "backup-export")),
+            backup_age_recipient=os.getenv("RRPP_BACKUP_AGE_RECIPIENT", "").strip(),
+            backup_hour=backup_hour,
+            backup_timezone=backup_timezone,
         )

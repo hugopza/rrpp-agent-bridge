@@ -90,6 +90,7 @@ The V1 implementation maps each architectural responsibility to an explicit comp
 | policy evaluation | `rrpp_bridge.policy.Policy` | Policy evaluates explicit intended actions and unknown actions fail closed. |
 | worker execution | `rrpp_bridge.executor.Executor` | Claims durable jobs and records actions; external dispatch is intentionally absent in V1. |
 | audit trail | `audit_log` through `rrpp_bridge.audit` | Lifecycle, decisions, errors, and operator operations use correlated structured entries. |
+| operations and recovery | `rrpp_bridge.operations` | Sanitized service heartbeats, verified backup/retention, optional `age` export, health evaluation, and offline restore. |
 | process entry points | `rrpp_bridge.cli` | Web and worker are independently runnable processes. |
 | private operations | `rrpp_bridge.web` | Authenticated operational view and local simulator, with CSRF protection. |
 
@@ -98,3 +99,5 @@ SQLite changes are applied through ordered, packaged migrations. Jobs use expiri
 An RRPP worker first creates an explicit intended action, then policy decides that action, and only a future external executor may dispatch it.
 
 Events attach to a channel-scoped conversation inside the same durable ingestion transaction. Routing is evaluated after normalization and uses only configured channel and recipient identities. A resolved conversation reopens on a new event. Drafts and escalations create review records; draft text revisions are operational records, while audit entries contain only identifiers, states, and versions.
+
+The supported deployment remains a single host. Web, worker, Gmail poller, and maintenance share SQLite on a persistent local volume. Runtime processes refuse pending migrations. Service health is durable but not a public endpoint. Backups use SQLite's online backup API, are integrity checked before retention or restore, and encrypted exports use only an owner-controlled public recipient. Restore is never exposed through the dashboard.

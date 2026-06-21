@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-06-21 - Private single-host operations
+
+- Status: Verified
+- Area: deployment and recovery
+- Fact: Long-running services persist sanitized health, backups use SQLite's online API plus integrity verification, restore is offline and guarded, and the Compose dashboard port binds only to host loopback. Encrypted exports use an `age` public recipient while the private identity remains off-host.
+- Evidence: migration 006, `operations.py`, operations tests, successful image build, healthy multi-service Compose smoke test, graceful-stop verification, and `docs/DEPLOYMENT.md`.
+- Implication: Future deployment work must preserve one-host SQLite semantics, explicit migrations, non-public health data, off-host encrypted-copy handling, and CLI-only restore.
+
 ### 2026-06-21 - Operational workspace and bounded dashboard
 
 - Status: Verified

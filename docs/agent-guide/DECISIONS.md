@@ -18,6 +18,7 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 | ADR-0003 | Persist runtime mode and allow audited administration | Accepted | 2026-06-19 |
 | ADR-0004 | Use Gmail API as the first read-only connector | Accepted | 2026-06-19 |
 | ADR-0005 | Add operational venues, conversations, and human review | Accepted | 2026-06-21 |
+| ADR-0006 | Operate a private single-host deployment | Accepted | 2026-06-21 |
 
 ## ADR-0001: Persistent Agent Guide
 
@@ -66,6 +67,16 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 - Alternatives: Free-form venue tags would limit future configuration and metrics. Keyword routing would treat untrusted message content as operational input. Cross-channel identity merging would be unreliable and privacy-sensitive. Allowing approval to send would require new connector scopes and a separate external-effects security review.
 - Consequences: The dashboard gains authenticated CSRF-protected venue, conversation, and review controls. Existing events are backfilled into conversations by `work_key`; existing assigned conversations remain stable unless an operator changes them. A single dashboard administrator can view all venues.
 - Validation: Migration, routing, conversation lifecycle, review transitions, audit redaction, pagination, authentication, CSRF, and no-external-execution tests.
+
+## ADR-0006: Private Single-Host Operations and Recovery
+
+- Status: Accepted
+- Date: 2026-06-21
+- Context: The bridge needs observable long-running services, recoverable SQLite data, and a VPS-ready deployment without exposing the private dashboard publicly.
+- Decision: Run web, worker, Gmail poller, and maintenance as separate processes on one host with a shared persistent SQLite volume. Persist sanitized heartbeats and backup metadata. Create verified SQLite-native daily and monthly backups, optionally export them with `age` public-key encryption, and permit restoration only through an explicit offline CLI workflow. Bind the dashboard to loopback and access it through an SSH tunnel. Container runtime processes use least privilege and normal startup never applies pending migrations.
+- Alternatives: A public reverse proxy increases the attack surface and requires a separate public-deployment review. PostgreSQL and distributed supervision are unnecessary for the current single-owner load. Dashboard restore controls would expose a destructive operation to the web. Same-disk backups alone do not address host loss.
+- Consequences: SQLite remains limited to one host. The owner must move encrypted exports off-host and retain the `age` private identity outside the VPS. Docker is optional for Windows development but becomes the documented VPS runtime.
+- Validation: Heartbeat thresholds, error redaction, WAL-safe backup, retention, corruption detection, encrypted export, offline restoration, container configuration, dashboard privacy, and full regression tests.
 
 ## ADR Template
 

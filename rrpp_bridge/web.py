@@ -6,15 +6,17 @@ import html
 import re
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from http import cookies
 from importlib import resources
 from urllib.parse import parse_qs, quote, urlencode
 from wsgiref.util import setup_testing_defaults
 
 from .config import Settings
-from .db import connect, prepare_runtime
+from .db import connect, current_version, latest_version, prepare_runtime
 from .queue import JobQueue
 from .runtime import get_mode, initialize_mode, set_mode
+from .operations import service_health
 from .service import ingest_local
 from .workspace import (add_route, assign_conversation, create_venue, disable_route, edit_review,
                         set_conversation_status, transition_review, update_venue)
@@ -109,7 +111,7 @@ class Application:
     def _header(self, csrf: str, active: str = "summary") -> str:
         links = (("summary", "/", "Resum"), ("conversations", "/conversations", "Converses"),
                  ("reviews", "/reviews", "Revisió"), ("activity", "/activity", "Activitat"),
-                 ("venues", "/venues", "Discoteques"))
+                 ("venues", "/venues", "Discoteques"), ("system", "/system", "Sistema"))
         nav = "".join(
             f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
             for key, href, label in links
@@ -255,6 +257,8 @@ class Application:
                 return self._respond(start_response, "303 See Other", "", [("Location", "/venues")])
             if path == "/venues" and method == "GET":
                 return self._venues(start_response, csrf)
+            if path == "/system" and method == "GET":
+                return self._system(start_response, csrf)
             match = re.fullmatch(r"/routes/([A-Za-z0-9_-]+)/disable", path)
             if match and method == "POST":
                 self._csrf_form(environ, csrf)
@@ -333,6 +337,11 @@ class Application:
             gmail_state = conn.execute(
                 "SELECT updated_at FROM connector_state WHERE connector='gmail' AND key='history_id'"
             ).fetchone()
+            service_rows = conn.execute("SELECT * FROM service_status ORDER BY service").fetchall()
+            last_backup = conn.execute(
+                "SELECT * FROM backup_records WHERE integrity_status='verified' AND kind IN ('daily','monthly') "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
         finally:
             conn.close()
         metric_values = {
@@ -387,6 +396,23 @@ class Application:
         gmail_badge = self._badge("success" if gmail_state else "warning",
                                   "Sincronitzat" if gmail_state else "Pendent")
         gmail_time = self._time(gmail_state["updated_at"]) if gmail_state else "Encara sense cursor"
+        service_states = {row["service"]: service_health(
+            row, gmail_poll_seconds=self.settings.gmail_poll_seconds
+        ) for row in service_rows}
+        alerts = []
+        service_labels = {"worker": "Worker", "gmail": "Gmail", "maintenance": "Manteniment"}
+        for service in ("worker", "gmail", "maintenance"):
+            state = service_states.get(service, "missing")
+            if state != "healthy":
+                alerts.append(f"{service_labels[service]}: {state}")
+        backup_old = True
+        if last_backup:
+            backup_old = datetime.now(timezone.utc) - datetime.fromisoformat(last_backup["created_at"]) > timedelta(hours=26)
+        if backup_old:
+            alerts.append("No hi ha cap backup verificat de les últimes 26 hores")
+        alert_html = "".join(f'<li>{_escape(item)}</li>' for item in alerts)
+        alert_section = (f'<section class="section alert-card" role="status"><div><strong>Requereix atenció</strong>'
+                         f'<ul>{alert_html}</ul></div><a href="/system">Veure sistema</a></section>') if alerts else ""
         executed = execution_counts.get("executed", 0)
         suppressed = execution_counts.get("suppressed", 0)
         content = f"""
@@ -400,6 +426,7 @@ class Application:
       <div class="status-row">{self._badge(mode, f'Mode: {mode_label}')}{gmail_badge}
         {self._badge('success', f'{executed} executades')}{self._badge('suppressed', f'{suppressed} suprimides')}</div>
     </section>
+    {alert_section}
     <section class="section" aria-labelledby="overview-title">
       <div class="section-heading"><div><p class="eyebrow">Resum</p><h2 id="overview-title">Estat del sistema</h2></div><p>Actualitzat en carregar la pàgina</p></div>
       <div class="grid metrics">{metrics}</div>
@@ -647,6 +674,31 @@ class Application:
             cards.append(f'''<article class="card venue-card"><div class="card-header"><div><h2>{_escape(venue["name"])}</h2><p>{venue["conversation_count"]} converses · /{_escape(venue["slug"])}</p></div>{self._badge("success" if venue["active"] else "warning", "Activa" if venue["active"] else "Inactiva")}</div><form method="post" action="/venues/{_escape(venue["id"])}/update" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Nom<input name="name" value="{_escape(venue["name"])}" required maxlength="120"></label><label>Idioma<select name="language"><option value="ca"{" selected" if venue["default_language"] == "ca" else ""}>Català</option><option value="es"{" selected" if venue["default_language"] == "es" else ""}>Castellà</option></select></label><label>Estat<select name="active"><option value="1"{" selected" if venue["active"] else ""}>Activa</option><option value="0"{" selected" if not venue["active"] else ""}>Inactiva</option></select></label><button>Desar</button></form><h3>Regles d’assignació</h3><ul class="route-list">{route_list}</ul><form method="post" action="/venues/{_escape(venue["id"])}/routes" class="form-grid"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Canal<select name="channel"><option value="gmail">Gmail</option><option value="local">Simulador</option></select></label><label>Destinatari o alias<input name="recipient" required maxlength="500"></label><button>Afegir regla</button></form></article>''')
         body = f'''<section class="hero compact"><p class="eyebrow">Organització</p><h1>Discoteques</h1><p class="hero-copy">Configuració operativa i routing exacte per canal i destinatari.</p></section><section class="section grid two"><article class="card"><h2>Nova discoteca</h2><form method="post" action="/venues" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Nom<input name="name" required maxlength="120"></label><label>Identificador<input name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="nom-discoteca"></label><label>Idioma<select name="language"><option value="ca">Català</option><option value="es">Castellà</option></select></label><button>Crear discoteca</button></form></article><article class="card"><h2>Com funciona</h2><p class="mode-help">Les regles comparen el destinatari exacte. Si no coincideix, la conversa queda Sense assignar. El contingut del missatge mai decideix la discoteca.</p></article></section><section class="section grid two">{"".join(cards) or "<p class=\"empty card\">Encara no hi ha discoteques.</p>"}</section>'''
         return self._respond(start_response, "200 OK", self._layout("Discoteques · RRPP", csrf, "venues", body))
+
+    def _system(self, start_response, csrf: str):
+        conn = self._connect()
+        try:
+            services = conn.execute("SELECT * FROM service_status ORDER BY service").fetchall()
+            backups = conn.execute("SELECT * FROM backup_records ORDER BY created_at DESC LIMIT 20").fetchall()
+            dead_letters = conn.execute("SELECT count(*) FROM jobs WHERE state='dead_letter'").fetchone()[0]
+            pending_reviews = conn.execute("SELECT count(*) FROM action_reviews WHERE status='pending'").fetchone()[0]
+            mode, schema = get_mode(conn), current_version(conn)
+        finally:
+            conn.close()
+        service_map = {row["service"]: row for row in services}
+        labels = {"worker": "Worker", "gmail": "Gmail", "maintenance": "Manteniment"}
+        service_cards = []
+        for name in ("worker", "gmail", "maintenance"):
+            row = service_map.get(name)
+            state = service_health(row, gmail_poll_seconds=self.settings.gmail_poll_seconds)
+            service_cards.append(f'''<article class="card service-card"><div class="card-header"><div><h2>{labels[name]}</h2><p>{_escape(row["instance_id"] if row else "Encara no iniciat")}</p></div>{self._badge(state)}</div><dl class="compact-record"><dt>Heartbeat</dt><dd>{self._time(row["heartbeat_at"] if row else None)}</dd><dt>Últim èxit</dt><dd>{self._time(row["last_success_at"] if row else None)}</dd><dt>Últim error</dt><dd>{_escape(row["last_error_code"] if row else "—")}</dd></dl></article>''')
+        backup_rows = "".join(
+            f'<tr><td>{_escape(row["kind"])}</td><td>{_escape(row["filename"])}</td><td>{row["size_bytes"]}</td>'
+            f'<td>{self._badge(row["integrity_status"])}</td><td>{self._badge("success" if row["encrypted_export"] else "warning", "Sí" if row["encrypted_export"] else "No")}</td>'
+            f'<td>{self._time(row["created_at"])}</td></tr>' for row in backups
+        ) or '<tr><td colspan="6" class="empty">Encara no hi ha backups registrats.</td></tr>'
+        body = f'''<section class="hero compact"><p class="eyebrow">Operacions</p><h1>Sistema</h1><p class="hero-copy">Salut dels processos, recuperació i estat persistent.</p><div class="status-row">{self._badge(mode, f"Mode: {mode}")}{self._badge("info", f"Esquema {schema}/{latest_version()}")}{self._badge("danger" if dead_letters else "success", f"{dead_letters} fallits")}{self._badge("warning" if pending_reviews else "success", f"{pending_reviews} revisions")}</div></section><section class="section grid service-grid">{"".join(service_cards)}</section><section class="section card table-card"><div class="card-header"><div><h2>Backups recents</h2><p>Últims 20 registres verificats o fallits.</p></div>{self._badge("info", str(len(backups)))}</div><div class="table-scroll"><table><thead><tr><th>Tipus</th><th>Fitxer</th><th>Bytes</th><th>Integritat</th><th>Xifrat</th><th>Creat</th></tr></thead><tbody>{backup_rows}</tbody></table></div></section><section class="section card"><h2>Accés privat</h2><p class="mode-help">En VPS, el dashboard només escolta a localhost. Accedeix-hi amb un túnel SSH; no exposis el port 8080 públicament.</p></section>'''
+        return self._respond(start_response, "200 OK", self._layout("Sistema · RRPP", csrf, "system", body))
 
     def _detail(self, start_response, kind: str, entity_id: str):
         conn = self._connect()

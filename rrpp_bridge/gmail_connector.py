@@ -11,6 +11,7 @@ from .adapters.gmail import normalize
 from .audit import record, utc_now
 from .db import transaction
 from .queue import JobQueue
+from .operations import heartbeat
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 CONNECTOR = "gmail"
@@ -148,15 +149,22 @@ class GmailConnector:
 
 
 def run_poll_loop(conn: sqlite3.Connection, service: Any, batch_size: int,
-                  poll_seconds: int, once: bool = False) -> None:
+                  poll_seconds: int, once: bool = False, instance: str = "") -> None:
     connector = GmailConnector(conn, service, batch_size)
     while True:
         try:
+            if instance:
+                heartbeat(conn, "gmail", instance)
             result = connector.poll_once()
+            if instance:
+                heartbeat(conn, "gmail", instance, success=True,
+                          details={"accepted": result["accepted"], "duplicates": result["duplicates"]})
             print(json.dumps(result, sort_keys=True))
             if once:
                 return
         except Exception as exc:
+            if instance:
+                heartbeat(conn, "gmail", instance, error=exc)
             print(json.dumps({"connector": "gmail", "status": "failed",
                               "error_code": type(exc).__name__}, sort_keys=True))
             if once:

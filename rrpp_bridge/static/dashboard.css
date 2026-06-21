@@ -213,6 +213,13 @@ tbody tr:hover { background: rgb(157 124 255 / 4%); }
 .login-form { display: grid; gap: 16px; margin-top: 25px; }
 .error-box { margin: 14px 0 0; border: 1px solid rgb(255 111 125 / 30%); border-radius: 10px; padding: 10px 12px; background: rgb(255 111 125 / 8%); color: #ffadb5; }
 .notice { border: 1px solid rgb(83 214 140 / 30%); border-radius: 10px; padding: 11px 13px; background: rgb(83 214 140 / 8%); color: #a4efc4; }
+.alert-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid rgb(255 189 89 / 35%); border-radius: var(--radius); padding: 16px 18px; background: rgb(255 189 89 / 8%); }
+.alert-card ul { margin: 6px 0 0; padding-left: 20px; color: #ffd99c; }
+.service-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.compact-record { display: grid; grid-template-columns: 110px minmax(0, 1fr); margin: 0; }
+.compact-record dt, .compact-record dd { margin: 0; padding: 7px 0; border-top: 1px solid var(--border); }
+.compact-record dt { color: var(--muted); font-size: 12px; }
+.compact-record dd { overflow-wrap: anywhere; }
 .footer { padding: 35px 0; color: var(--muted); font-size: 12px; text-align: center; }
 
 @media (max-width: 1050px) {
@@ -220,6 +227,7 @@ tbody tr:hover { background: rgb(157 124 255 / 4%); }
   .topbar { flex-wrap: wrap; padding-block: 14px; }
   .main-nav { order: 3; width: 100%; overflow-x: auto; }
   .filter-bar { grid-template-columns: repeat(2, 1fr); }
+  .service-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .app-shell { padding-inline: 16px; }
@@ -230,6 +238,7 @@ tbody tr:hover { background: rgb(157 124 255 / 4%); }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .section-heading { align-items: start; flex-direction: column; }
   .activity-item { grid-template-columns: 12px minmax(0, 1fr); }
+  .alert-card { align-items: start; flex-direction: column; }
   .activity-time { grid-column: 2; }
   .record-grid { grid-template-columns: 1fr; }
   .record-grid dd { border-top: 0; padding-top: 0; }

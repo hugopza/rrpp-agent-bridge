@@ -32,6 +32,10 @@ Validate adapter contracts for official Instagram and WhatsApp APIs, ticketing w
 
 Status: Completed on 2026-06-21. The private dashboard now groups events into channel-native conversations, supports operational venues and exact recipient routing, provides deterministic Catalan/Spanish drafts with human review, and keeps all approval outcomes non-sending. Existing draft and escalation actions are backfilled into the review queue. The overview is bounded to eight conversations and ten audit entries; full conversation and audit views are filtered and cursor-paginated. Validation covers migration backfill, Gmail threading, routing, re-opening, multi-review state, CSRF, audit redaction, and stable pagination.
 
+## Reliable Operations Increment
+
+Status: Completed on 2026-06-21. Worker, Gmail, and maintenance expose durable sanitized heartbeats in the private dashboard. SQLite-native backups are verified, retained as seven daily and three monthly copies, optionally exported with `age`, and restorable only through an offline confirmed CLI flow with a pre-restore safety copy. Docker Compose defines least-privilege web, worker, Gmail, maintenance, and migration services on one host; the dashboard binds to loopback for SSH-tunnel access.
+
 ## Cross-Milestone Quality Gates
 
 - Relevant automated tests pass and failure paths are covered.

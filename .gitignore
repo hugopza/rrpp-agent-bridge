@@ -4,9 +4,14 @@ __pycache__/
 *.db-shm
 *.db-wal
 .env
+.env.docker
 .venv/
 .pytest_cache/
 dist/
 *.egg-info/
 secrets/
 var/
+backups/
+backup-export/
+runtime-secrets/
+*.agekey

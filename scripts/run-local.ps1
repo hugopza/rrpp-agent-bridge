@@ -11,6 +11,7 @@ Push-Location $root
 try {
     & $python -m rrpp_bridge migrate
     $worker = Start-Process -FilePath $python -ArgumentList @("-m", "rrpp_bridge", "worker") -WorkingDirectory $root -WindowStyle Hidden -PassThru
+    $maintenance = Start-Process -FilePath $python -ArgumentList @("-m", "rrpp_bridge", "maintenance") -WorkingDirectory $root -WindowStyle Hidden -PassThru
     $gmail = $null
     if (Test-Path -LiteralPath (Join-Path $root "secrets\gmail-token.json")) {
         $gmail = Start-Process -FilePath $python -ArgumentList @("-m", "rrpp_bridge", "gmail-poll") -WorkingDirectory $root -WindowStyle Hidden -PassThru
@@ -19,6 +20,9 @@ try {
         & $python -m rrpp_bridge web
     }
     finally {
+        if ($maintenance -and -not $maintenance.HasExited) {
+            Stop-Process -Id $maintenance.Id
+        }
         if ($gmail -and -not $gmail.HasExited) {
             Stop-Process -Id $gmail.Id
         }
