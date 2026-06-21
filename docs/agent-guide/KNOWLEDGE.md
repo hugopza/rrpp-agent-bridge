@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-06-21 - Operational workspace and bounded dashboard
+
+- Status: Verified
+- Area: dashboard and workflow
+- Fact: Events are grouped into channel-native conversations and may be assigned to operational venues by exact recipient routes; drafts and escalations require human review, and approval never sends externally. The overview renders at most eight conversations and ten audit entries while full activity uses cursor pagination.
+- Evidence: migration 004, `workspace.py`, authenticated web tests, and the complete automated suite.
+- Implication: Future adapters must provide a stable conversation key and normalized recipient identity. New review controls must preserve CSRF, audit redaction, and the non-sending approval boundary until a separate external-effects ADR is accepted.
+
 ### 2026-06-19 - V1 runtime and external effects
 
 - Status: Verified

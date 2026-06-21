@@ -84,6 +84,7 @@ The V1 implementation maps each architectural responsibility to an explicit comp
 | Architectural responsibility | RRPP V1 component | Implementation boundary |
 | --- | --- | --- |
 | inbound normalization | `rrpp_bridge.adapters` | Channel input becomes a `NormalizedEvent`; only the local adapter exists in V1. |
+| operational workspace | `rrpp_bridge.workspace` | Exact recipient routing, venue administration, conversation lifecycle, and human review transitions. |
 | durable queue | `rrpp_bridge.queue.JobQueue` | Events and jobs are committed together; channel message IDs provide idempotency. |
 | conversation concurrency | job `work_key` | Related conversations serialize while unrelated conversations may proceed independently. |
 | policy evaluation | `rrpp_bridge.policy.Policy` | Policy evaluates explicit intended actions and unknown actions fail closed. |
@@ -95,3 +96,5 @@ The V1 implementation maps each architectural responsibility to an explicit comp
 SQLite changes are applied through ordered, packaged migrations. Jobs use expiring leases, bounded exponential retry delays, and a terminal dead-letter state. Operators may retry or dismiss terminal jobs through authenticated, audited controls.
 
 An RRPP worker first creates an explicit intended action, then policy decides that action, and only a future external executor may dispatch it.
+
+Events attach to a channel-scoped conversation inside the same durable ingestion transaction. Routing is evaluated after normalization and uses only configured channel and recipient identities. A resolved conversation reopens on a new event. Drafts and escalations create review records; draft text revisions are operational records, while audit entries contain only identifiers, states, and versions.

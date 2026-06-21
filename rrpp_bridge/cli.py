@@ -7,7 +7,7 @@ import time
 from wsgiref.simple_server import make_server
 
 from .config import Settings
-from .db import backup_database, connect, current_version, initialize, latest_version
+from .db import backup_database, connect, current_version, initialize, latest_version, prepare_runtime
 from .queue import JobQueue
 from .runtime import get_mode, initialize_mode
 from .service import process_one
@@ -16,8 +16,12 @@ from .web import Application
 
 def _prepare(settings: Settings):
     conn = connect(settings.database_path)
-    initialize(conn)
-    initialize_mode(conn, settings.mode)
+    try:
+        prepare_runtime(conn)
+        initialize_mode(conn, settings.mode)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 

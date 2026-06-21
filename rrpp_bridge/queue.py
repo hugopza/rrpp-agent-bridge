@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from .audit import record, utc_now
 from .db import transaction
 from .models import NormalizedEvent
+from .workspace import ensure_conversation
 
 
 def _id(prefix: str) -> str:
@@ -28,11 +29,18 @@ class JobQueue:
         event_id, job_id, timestamp = _id("evt"), _id("job"), utc_now()
         try:
             with transaction(self.conn, immediate=True):
+                conversation_id = ensure_conversation(
+                    self.conn, event.channel, event.work_key, event.recipient,
+                    event.received_at or timestamp, f"adapter.{event.channel}",
+                )
                 self.conn.execute(
-                    "INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO events(id,channel,external_message_id,sender,recipient,subject,body_text,"
+                    "received_at,ingested_at,metadata_json,work_key,status,conversation_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (event_id, event.channel, event.external_message_id, event.sender,
                      event.recipient, event.subject, event.body_text, event.received_at or timestamp, timestamp,
-                     json.dumps(event.metadata, separators=(",", ":")), event.work_key, "queued"),
+                     json.dumps(event.metadata, separators=(",", ":")), event.work_key, "queued",
+                     conversation_id),
                 )
                 self.conn.execute(
                     "INSERT INTO jobs(id,event_id,work_key,state,available_at,created_at,updated_at) "

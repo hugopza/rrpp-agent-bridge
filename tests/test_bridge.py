@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -9,7 +10,9 @@ from unittest.mock import patch
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
+from urllib.parse import urlencode
 
+from rrpp_bridge.action_executor import decide_execution
 from rrpp_bridge.config import Settings, load_local_env
 from rrpp_bridge.db import backup_database, connect, current_version, initialize, latest_version
 from rrpp_bridge.executor import Executor
@@ -17,6 +20,8 @@ from rrpp_bridge.queue import JobQueue
 from rrpp_bridge.runtime import get_mode, initialize_mode, set_mode
 from rrpp_bridge.service import ingest_local, process_one
 from rrpp_bridge.web import Application
+from rrpp_bridge.workspace import (add_route, create_venue, edit_review,
+                                   set_conversation_status, transition_review)
 
 
 class BridgeTests(unittest.TestCase):
@@ -51,11 +56,14 @@ class BridgeTests(unittest.TestCase):
         action = self.conn.execute("SELECT * FROM actions").fetchone()
         decision = self.conn.execute("SELECT * FROM policy_decisions").fetchone()
         execution = self.conn.execute("SELECT * FROM action_executions").fetchone()
-        self.assertEqual(("draft_reply", "suppressed", "shadow"),
+        self.assertEqual(("draft_reply", "pending_review", "shadow"),
                          (action["type"], action["state"], action["mode"]))
-        self.assertEqual("allowed", decision["outcome"])
-        self.assertEqual(("suppressed", "mode_shadow", 1),
+        self.assertEqual("pending_approval", decision["outcome"])
+        self.assertEqual(("suppressed", "policy_pending_approval", 1),
                          (execution["status"], execution["reason"], execution["simulated"]))
+        self.assertEqual(("draft", "pending"), tuple(self.conn.execute(
+            "SELECT kind,status FROM action_reviews"
+        ).fetchone()))
 
     def test_sensitive_request_is_escalated_and_never_executed(self):
         set_mode(self.conn, "live", "test")
@@ -75,15 +83,53 @@ class BridgeTests(unittest.TestCase):
             ("live", "user-e", frozenset(), "executed", "local_simulated_sink"),
         ]
         for index, (mode, sender, allowlist, status, reason) in enumerate(cases):
-            set_mode(self.conn, mode, "test")
-            ingest_local(self.conn, self.payload(f"matrix-{index}", sender=sender))
-            Executor(self.conn, canary_senders=allowlist).run_once()
-            row = self.conn.execute(
-                "SELECT x.status,x.reason,x.simulated FROM action_executions x "
-                "JOIN actions a ON a.id=x.action_id JOIN events e ON e.id=a.event_id "
-                "WHERE e.external_message_id=?", (f"matrix-{index}",)
-            ).fetchone()
-            self.assertEqual((status, reason, 1), tuple(row))
+            result = decide_execution(mode, "allowed", sender, allowlist)
+            self.assertEqual((status, reason), (result.status, result.reason), f"case {index}")
+
+    def test_venue_routing_groups_messages_and_resolved_conversation_reopens(self):
+        venue_id = create_venue(self.conn, "Club Test", "club-test", "es", "admin")
+        add_route(self.conn, venue_id, "local", "promoter", "admin")
+        ingest_local(self.conn, self.payload("thread-1"))
+        ingest_local(self.conn, self.payload("thread-2"))
+        row = self.conn.execute("SELECT * FROM conversations").fetchone()
+        self.assertEqual((venue_id, "open", 2), (row["venue_id"], row["status"], self.conn.execute(
+            "SELECT count(*) FROM events WHERE conversation_id=?", (row["id"],)
+        ).fetchone()[0]))
+        self.assertTrue(set_conversation_status(self.conn, row["id"], "resolved", "admin"))
+        ingest_local(self.conn, self.payload("thread-3"))
+        self.assertEqual("open", self.conn.execute(
+            "SELECT status FROM conversations WHERE id=?", (row["id"],)
+        ).fetchone()[0])
+
+    def test_draft_review_is_versioned_prepared_and_never_sent(self):
+        set_mode(self.conn, "live", "test")
+        ingest_local(self.conn, self.payload())
+        process_one(self.conn)
+        review = self.conn.execute("SELECT * FROM action_reviews").fetchone()
+        self.assertTrue(edit_review(self.conn, review["id"], "Resposta revisada", "admin"))
+        self.assertTrue(transition_review(self.conn, review["id"], "prepared", "admin"))
+        current = self.conn.execute("SELECT status,version,current_text FROM action_reviews").fetchone()
+        self.assertEqual(("prepared", 2, "Resposta revisada"), tuple(current))
+        self.assertEqual(2, self.conn.execute("SELECT count(*) FROM draft_revisions").fetchone()[0])
+        self.assertEqual("suppressed", self.conn.execute("SELECT status FROM action_executions").fetchone()[0])
+        audit = " ".join(row[0] for row in self.conn.execute("SELECT details_json FROM audit_log"))
+        self.assertNotIn("Resposta revisada", audit)
+
+    def test_conversation_stays_pending_until_all_reviews_are_closed(self):
+        ingest_local(self.conn, self.payload("pending-1"))
+        ingest_local(self.conn, self.payload("pending-2"))
+        process_one(self.conn)
+        process_one(self.conn)
+        reviews = self.conn.execute("SELECT id FROM action_reviews ORDER BY created_at,id").fetchall()
+        conversation_id = self.conn.execute("SELECT id FROM conversations").fetchone()[0]
+        self.assertTrue(transition_review(self.conn, reviews[0]["id"], "prepared", "admin"))
+        self.assertEqual("pending_review", self.conn.execute(
+            "SELECT status FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()[0])
+        self.assertTrue(transition_review(self.conn, reviews[1]["id"], "prepared", "admin"))
+        self.assertEqual("open", self.conn.execute(
+            "SELECT status FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()[0])
 
     def test_backoff_then_dead_letter(self):
         ingest_local(self.conn, self.payload())
@@ -156,6 +202,10 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(list(range(2, latest_version() + 1)), initialize(conn))
                 self.assertEqual(latest_version(), current_version(conn))
                 self.assertEqual("evt_old", conn.execute("SELECT id FROM events").fetchone()[0])
+                conversation = conn.execute(
+                    "SELECT c.external_key,e.conversation_id FROM conversations c JOIN events e ON e.conversation_id=c.id"
+                ).fetchone()
+                self.assertEqual(("local:a:b", conversation["conversation_id"]), tuple(conversation))
             finally:
                 conn.close()
 
@@ -175,6 +225,47 @@ class MigrationTests(unittest.TestCase):
                     self.assertEqual(1, copied.execute("SELECT count(*) FROM audit_log").fetchone()[0])
                 finally:
                     copied.close()
+            finally:
+                conn.close()
+
+    def test_runtime_refuses_to_silently_migrate_existing_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "outdated.db"
+            conn = connect(path)
+            sql = resources.files("rrpp_bridge.sql").joinpath("001_initial.sql").read_text(encoding="utf-8")
+            conn.executescript(sql)
+            conn.execute("INSERT INTO schema_migrations VALUES(1,datetime('now'))")
+            conn.close()
+            settings = Settings(path, "shadow", "admin", "long-test-password", "s" * 32)
+            with self.assertRaisesRegex(RuntimeError, "rrpp-bridge migrate"):
+                Application(settings)
+            conn = connect(path)
+            try:
+                self.assertEqual(1, current_version(conn))
+            finally:
+                conn.close()
+
+    def test_existing_draft_is_backfilled_into_review_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "schema-four.db")
+            try:
+                for version, name in ((1, "001_initial.sql"), (2, "002_milestone_one_hardening.sql"),
+                                      (3, "003_gmail_connector.sql"), (4, "004_operational_workspace.sql")):
+                    sql = resources.files("rrpp_bridge.sql").joinpath(name).read_text(encoding="utf-8")
+                    conn.executescript(sql)
+                    conn.execute("INSERT INTO schema_migrations VALUES(?,datetime('now'))", (version,))
+                conn.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             ("evt_old", "local", "old", "a", "b", "", "body", "now", "now", "{}", "local:a:b", "processed", None))
+                conn.execute("INSERT INTO jobs(id,event_id,work_key,state,attempts,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                             ("job_old", "evt_old", "local:a:b", "completed", 1, "now", "now", "now"))
+                conn.execute("INSERT INTO actions VALUES(?,?,?,?,?,?,?,?,?)",
+                             ("act_old", "evt_old", "job_old", "draft_reply", '{"text":"Legacy draft"}', "suppressed", "shadow", "now", "now"))
+                conn.execute("INSERT INTO policy_decisions VALUES(?,?,?,?,?,?)",
+                             ("dec_old", "act_old", "allowed", "legacy", "legacy", "now"))
+                self.assertEqual([5], initialize(conn))
+                self.assertEqual(("pending", "Legacy draft"), tuple(conn.execute(
+                    "SELECT status,current_text FROM action_reviews"
+                ).fetchone()))
             finally:
                 conn.close()
 
@@ -211,7 +302,8 @@ class WebTests(unittest.TestCase):
         def start_response(status, headers):
             captured.update(status=status, headers=dict(headers))
         raw = body.encode()
-        environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "SERVER_NAME": "test",
+        path_info, _, query_string = path.partition("?")
+        environ = {"REQUEST_METHOD": method, "PATH_INFO": path_info, "QUERY_STRING": query_string, "SERVER_NAME": "test",
                    "SERVER_PORT": "80", "SERVER_PROTOCOL": "HTTP/1.1", "wsgi.url_scheme": "http",
                    "wsgi.input": io.BytesIO(raw), "CONTENT_LENGTH": str(len(raw)),
                    "CONTENT_TYPE": "application/x-www-form-urlencoded", "HTTP_COOKIE": cookie}
@@ -318,6 +410,71 @@ class WebTests(unittest.TestCase):
         detail, page = self.request(f"/events/{event_id}", cookie=cookie)
         self.assertEqual("200 OK", detail["status"])
         self.assertIn("independent-worker", page)
+
+    def test_operational_pages_are_private_bounded_and_filterable(self):
+        for path in ("/conversations", "/reviews", "/activity", "/venues"):
+            anonymous, _ = self.request(path)
+            self.assertEqual("303 See Other", anonymous["status"])
+        cookie, _ = self.login()
+        for path, label in (("/conversations", "Converses"), ("/reviews", "Cua de revisió"),
+                            ("/activity", "50 registres per pàgina"), ("/venues", "Nova discoteca")):
+            result, page = self.request(path, cookie=cookie)
+            self.assertEqual("200 OK", result["status"])
+            self.assertIn(label, page)
+        _, dashboard = self.request(cookie=cookie)
+        self.assertIn("Les 8 converses més recents", dashboard)
+        self.assertIn("últims 10 moviments", dashboard)
+
+    def test_dashboard_manages_venue_routing_and_human_review_with_csrf(self):
+        cookie, csrf = self.login()
+        venue_body = urlencode({"csrf": csrf, "name": "Sala Nord", "slug": "sala-nord", "language": "ca"})
+        created, _ = self.request("/venues", "POST", venue_body, cookie)
+        self.assertEqual("303 See Other", created["status"])
+        conn = connect(self.path)
+        venue_id = conn.execute("SELECT id FROM venues WHERE slug='sala-nord'").fetchone()[0]
+        conn.close()
+        route_body = urlencode({"csrf": csrf, "channel": "local", "recipient": "promoter"})
+        routed, _ = self.request(f"/venues/{venue_id}/routes", "POST", route_body, cookie)
+        self.assertEqual("303 See Other", routed["status"])
+        simulate = urlencode({"csrf": csrf, **BridgeTests.payload("review-web")})
+        self.request("/simulate", "POST", simulate, cookie)
+        conn = connect(self.path)
+        Executor(conn).run_once("test-web-worker")
+        review_id = conn.execute("SELECT id FROM action_reviews").fetchone()[0]
+        conversation = conn.execute("SELECT id,venue_id FROM conversations").fetchone()
+        conn.close()
+        self.assertEqual(venue_id, conversation["venue_id"])
+        denied, _ = self.request(f"/reviews/{review_id}/edit", "POST", "text=Canvi", cookie)
+        self.assertEqual("403 Forbidden", denied["status"])
+        edited, _ = self.request(f"/reviews/{review_id}/edit", "POST",
+                                 urlencode({"csrf": csrf, "text": "Resposta preparada"}), cookie)
+        approved, _ = self.request(f"/reviews/{review_id}/approve", "POST",
+                                   urlencode({"csrf": csrf}), cookie)
+        self.assertEqual(("303 See Other", "303 See Other"), (edited["status"], approved["status"]))
+        conn = connect(self.path)
+        self.assertEqual("prepared", conn.execute("SELECT status FROM action_reviews").fetchone()[0])
+        self.assertEqual(1, conn.execute("SELECT count(*) FROM action_executions WHERE status='suppressed'").fetchone()[0])
+        route_id = conn.execute("SELECT id FROM venue_routes").fetchone()[0]
+        conn.close()
+        disabled, _ = self.request(f"/routes/{route_id}/disable", "POST", urlencode({"csrf": csrf}), cookie)
+        self.assertEqual("303 See Other", disabled["status"])
+
+    def test_activity_uses_stable_bounded_pagination(self):
+        conn = connect(self.path)
+        for index in range(65):
+            conn.execute("INSERT INTO audit_log VALUES(NULL,?,?,?,?,?,?,?)",
+                         (f"2026-01-01T00:00:{index % 60:02d}.000+00:00", "test", f"operation.{index}",
+                          "test", str(index), "ok", "{}"))
+        conn.close()
+        cookie, _ = self.login()
+        _, first = self.request("/activity", cookie=cookie)
+        self.assertEqual(50, first.count('class="activity-item"'))
+        match = re.search(r'/activity\?cursor=(\d+)', first)
+        self.assertIsNotNone(match)
+        _, second = self.request(f"/activity?cursor={match.group(1)}", cookie=cookie)
+        self.assertNotIn("operation.64", second)
+        _, dashboard = self.request(cookie=cookie)
+        self.assertEqual(10, dashboard.count("class='activity-item'"))
 
 
 if __name__ == "__main__":

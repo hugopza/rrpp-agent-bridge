@@ -17,6 +17,7 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 | ADR-0002 | Select the V1 application stack | Accepted | 2026-06-19 |
 | ADR-0003 | Persist runtime mode and allow audited administration | Accepted | 2026-06-19 |
 | ADR-0004 | Use Gmail API as the first read-only connector | Accepted | 2026-06-19 |
+| ADR-0005 | Add operational venues, conversations, and human review | Accepted | 2026-06-21 |
 
 ## ADR-0001: Persistent Agent Guide
 
@@ -55,6 +56,16 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 - Alternatives: Password/app-password IMAP creates broader credential exposure and weaker API-level scope control. Push notifications add public webhook and cloud messaging infrastructure before polling behavior is proven.
 - Consequences: The connector introduces official Google client libraries and one interactive browser consent. It cannot send, delete, label, archive, mark read, or otherwise mutate Gmail. Expired history cursors recover through a bounded inbox rescan with idempotent ingestion.
 - Validation: Parser, OAuth scope, initial sync, incremental history, cursor safety, duplicate handling, error, and dashboard visibility tests.
+
+## ADR-0005: Operational Venues, Conversations, and Human Review
+
+- Status: Accepted
+- Date: 2026-06-21
+- Context: The bridge needs an operator-oriented dashboard that groups channel events into conversations, separates work by nightlife venue, and makes drafts and escalations reviewable without enabling outbound delivery.
+- Decision: Model venues as operational entities, not security tenants. Resolve a venue after adapter normalization through exact channel-recipient routing rules, leaving unmatched conversations unassigned. Group messages using each channel's stable conversation identity and never merge identities across channels. Drafts require human review, may be edited with version history, and approval only marks them prepared; no review operation sends externally. Keep the append-oriented audit history and expose bounded, cursor-paginated views.
+- Alternatives: Free-form venue tags would limit future configuration and metrics. Keyword routing would treat untrusted message content as operational input. Cross-channel identity merging would be unreliable and privacy-sensitive. Allowing approval to send would require new connector scopes and a separate external-effects security review.
+- Consequences: The dashboard gains authenticated CSRF-protected venue, conversation, and review controls. Existing events are backfilled into conversations by `work_key`; existing assigned conversations remain stable unless an operator changes them. A single dashboard administrator can view all venues.
+- Validation: Migration, routing, conversation lifecycle, review transitions, audit redaction, pagination, authentication, CSRF, and no-external-execution tests.
 
 ## ADR Template
 

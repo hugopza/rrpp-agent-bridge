@@ -17,5 +17,5 @@ class Policy:
                                   "Sensitive request requires owner review")
         if action.type == "no_action":
             return PolicyDecision("ignored", "policy.no-action.v1", "No response is required")
-        return PolicyDecision("allowed", "policy.draft-only.v1",
-                              "Drafting is allowed and has no external side effect")
+        return PolicyDecision("pending_approval", "policy.human-review.v1",
+                              "Draft requires explicit human review and cannot be sent")

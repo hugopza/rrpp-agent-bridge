@@ -16,6 +16,30 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-06-21 - Failed startup validation leaked SQLite connection
+
+- Context: Testing that runtime startup rejects an existing outdated database.
+- Error: The expected validation exception left the database connection open, so Windows could not remove the test database.
+- Cause: Connection cleanup occurred only after successful application initialization.
+- Correction: Application initialization now closes through `finally`, and CLI preparation closes before re-raising any startup exception.
+- Prevention: Every connection acquired before validation must have an exception-path close; test startup failures inside a temporary directory to expose Windows file-handle leaks.
+
+### 2026-06-21 - Runtime startup bypassed migration backup
+
+- Context: Applying schema 004 to the local operational database.
+- Error: The explicit migration command found the database already upgraded and therefore could not create its intended pre-migration backup.
+- Cause: Normal web, worker, poller, and status startup paths called the general migration initializer automatically.
+- Correction: Runtime startup now initializes only an empty database and fails with an explicit migration instruction when an existing schema is outdated; only `rrpp-bridge migrate` upgrades existing data and takes the backup.
+- Prevention: Existing databases may only advance schema through the dedicated migration command; automated tests verify that runtime startup leaves an outdated schema unchanged.
+
+### 2026-06-21 - Nested HTML f-string broke Python parsing
+
+- Context: Rendering an optional dashboard form inside a venue-route list item.
+- Error: A nested f-string with escaped quotes produced a Python syntax error during bytecode compilation.
+- Cause: Conditional HTML generation, interpolation, and quoting were combined into one expression.
+- Correction: The route row now uses a small rendering function that builds the optional control separately.
+- Prevention: Do not nest f-strings for conditional HTML; compute optional fragments first and run `compileall` after each substantial server-rendered UI block.
+
 ### 2026-06-19 - Sandbox-inaccessible smoke-test path
 
 - Context: CLI smoke testing used an absolute temporary database path.

@@ -76,6 +76,18 @@ def initialize(conn: sqlite3.Connection) -> list[int]:
     return applied
 
 
+def prepare_runtime(conn: sqlite3.Connection) -> list[int]:
+    version = current_version(conn)
+    if version == 0:
+        return initialize(conn)
+    target = latest_version()
+    if version < target:
+        raise RuntimeError(
+            f"Database schema {version} is outdated; run 'rrpp-bridge migrate' before startup"
+        )
+    return []
+
+
 def backup_database(path: Path | str) -> Path | None:
     source = Path(path)
     if not source.exists():

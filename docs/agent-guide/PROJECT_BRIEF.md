@@ -82,6 +82,17 @@ The system MUST NOT:
 
 The design SHOULD allow later adapters for email, Instagram DM, WhatsApp Business, ticketing webhooks, and manual dashboard actions. Ticket analytics MUST distinguish `link sent`, `link clicked`, and `ticket sold`; the system MUST never infer or fabricate a sale.
 
+## Confirmed Operational Workspace
+
+- Group events into channel-native conversations; never infer cross-channel identity.
+- Separate work by configurable nightlife venue while retaining a global owner view.
+- Route by configured channel/recipient identity, never by untrusted message content.
+- Keep unmatched conversations visibly unassigned for manual review.
+- Generate deterministic Catalan or Spanish drafts and require human review.
+- Editing, approval, rejection, assignment, and resolution MUST be authenticated, CSRF-protected, and audited.
+- Approval marks a draft prepared and MUST NOT send externally.
+- Keep the audit history in the local phase; bound and paginate dashboard views instead of rendering unbounded lists.
+
 ## V1 Definition of Done
 
 V1 is complete when a local fake message is validated, normalized, durably persisted, independently processed into at least one action, decided by policy, fully audited, and visible in the authenticated dashboard. Safe modes and failures are visible, tests pass, no secrets are committed, and new adapters can reuse the same event-to-action pipeline.

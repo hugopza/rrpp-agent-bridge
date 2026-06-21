@@ -11,6 +11,7 @@ from .db import transaction
 from .policy import Policy
 from .queue import JobQueue
 from .runtime import get_mode
+from .workspace import create_review
 
 
 class Executor:
@@ -31,7 +32,13 @@ class Executor:
         ).fetchone()
         if existing:
             return existing, str(existing["outcome"])
-        intended = generate_action(event["body_text"])
+        language_row = self.conn.execute(
+            "SELECT COALESCE(v.default_language,'ca') language FROM events e "
+            "LEFT JOIN conversations c ON c.id=e.conversation_id "
+            "LEFT JOIN venues v ON v.id=c.venue_id WHERE e.id=?",
+            (event["id"],),
+        ).fetchone()
+        intended = generate_action(event["body_text"], str(language_row["language"]) if language_row else "ca")
         decision = self.policy.decide(intended)
         action_id, decision_id, timestamp = (
             f"act_{uuid.uuid4().hex}", f"dec_{uuid.uuid4().hex}", utc_now()
@@ -40,7 +47,7 @@ class Executor:
             self.conn.execute(
                 "INSERT INTO actions VALUES(?,?,?,?,?,?,?,?,?)",
                 (action_id, event["id"], job["id"], intended.type,
-                 json.dumps(intended.payload, separators=(",", ":")), "decided", get_mode(self.conn),
+                 json.dumps(intended.payload, separators=(",", ":")), "pending_review", get_mode(self.conn),
                  timestamp, timestamp),
             )
             self.conn.execute("INSERT INTO policy_decisions VALUES(?,?,?,?,?,?)", (
@@ -51,6 +58,13 @@ class Executor:
                    {"type": intended.type})
             record(self.conn, "policy", "action.decided", "action", action_id,
                    decision.outcome, {"policy_id": decision.policy_id})
+            kind = "draft" if intended.type == "draft_reply" else "escalation"
+            review_text = str(intended.payload.get("text", "")) if kind == "draft" else ""
+            create_review(self.conn, action_id, kind, review_text, worker_id)
+            self.conn.execute(
+                "UPDATE conversations SET status='pending_review',updated_at=? "
+                "WHERE id=?", (timestamp, event["conversation_id"]),
+            )
         row = self.conn.execute(
             "SELECT a.*,p.outcome FROM actions a JOIN policy_decisions p ON p.action_id=a.id "
             "WHERE a.id=?", (action_id,),

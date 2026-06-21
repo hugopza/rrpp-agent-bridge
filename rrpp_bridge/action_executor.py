@@ -46,7 +46,10 @@ class LocalActionExecutor:
             return ExecutionResult(str(existing["status"]), str(existing["reason"]))
         result = decide_execution(mode, policy_outcome, sender, self.canary_senders)
         timestamp = utc_now()
-        action_state = "executed_simulated" if result.status == "executed" else "suppressed"
+        if policy_outcome in {"pending_approval", "escalated"}:
+            action_state = "pending_review"
+        else:
+            action_state = "executed_simulated" if result.status == "executed" else "suppressed"
         with transaction(self.conn, immediate=True):
             self.conn.execute(
                 "INSERT INTO action_executions VALUES(?,?,?,?,?,?,?,?)",

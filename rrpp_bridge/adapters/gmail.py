@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
+from email.utils import getaddresses
 from html.parser import HTMLParser
 from typing import Any
 
@@ -51,6 +52,11 @@ def _body(message: Message) -> str:
     return text[:MAX_BODY_LENGTH] or "[Message has no readable text body]"
 
 
+def _addresses(message: Message, header: str, fallback: str) -> str:
+    addresses = [address.casefold() for _, address in getaddresses(message.get_all(header, [])) if address]
+    return ",".join(addresses)[:500] or fallback
+
+
 def normalize(raw_message: dict[str, Any]) -> NormalizedEvent:
     message_id = str(raw_message.get("id") or "").strip()
     thread_id = str(raw_message.get("threadId") or message_id).strip()
@@ -64,8 +70,8 @@ def normalize(raw_message: dict[str, Any]) -> NormalizedEvent:
         )
     except (ValueError, TypeError) as exc:
         raise ValueError("Gmail message payload is malformed") from exc
-    sender = str(parsed.get("From") or "[unknown sender]")[:500]
-    recipient = str(parsed.get("To") or "[unknown recipient]")[:500]
+    sender = _addresses(parsed, "From", "[unknown sender]")
+    recipient = _addresses(parsed, "To", "[unknown recipient]")
     subject = str(parsed.get("Subject") or "")[:500]
     internal_date = str(raw_message.get("internalDate") or "")
     try:

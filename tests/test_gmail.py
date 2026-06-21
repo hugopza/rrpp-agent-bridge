@@ -9,6 +9,8 @@ from pathlib import Path
 from rrpp_bridge.adapters.gmail import normalize
 from rrpp_bridge.db import connect, initialize
 from rrpp_bridge.gmail_connector import GMAIL_READONLY_SCOPE, GmailConnector
+from rrpp_bridge.queue import JobQueue
+from rrpp_bridge.workspace import add_route, create_venue
 
 
 def gmail_message(message_id: str, body: str = "Hello from Gmail", *, html: bool = False):
@@ -87,6 +89,8 @@ class GmailAdapterTests(unittest.TestCase):
         self.assertEqual("gmail", event.channel)
         self.assertEqual("gmail-1", event.external_message_id)
         self.assertEqual("gmail:thread-1", event.work_key)
+        self.assertEqual(("customer@example.com", "promoter@example.com"),
+                         (event.sender, event.recipient))
         self.assertIn("Hello from Gmail", event.body_text)
         self.assertEqual("gmail:gmail-1", event.metadata["raw_payload_reference"])
         self.assertNotIn("raw", event.metadata)
@@ -117,6 +121,17 @@ class GmailConnectorTests(unittest.TestCase):
                          (result["accepted"], result["duplicates"], result["history_id"]))
         self.assertEqual("gmail", self.conn.execute("SELECT channel FROM events").fetchone()[0])
         self.assertEqual("100", self.conn.execute("SELECT value FROM connector_state").fetchone()[0])
+
+    def test_gmail_thread_groups_into_routed_conversation(self):
+        venue_id = create_venue(self.conn, "Sala Gmail", "sala-gmail", "ca", "test")
+        add_route(self.conn, venue_id, "gmail", "promoter@example.com", "test")
+        JobQueue(self.conn).enqueue(normalize(gmail_message("g-1")))
+        JobQueue(self.conn).enqueue(normalize(gmail_message("g-2")))
+        conversation = self.conn.execute("SELECT id,venue_id FROM conversations").fetchone()
+        self.assertEqual(venue_id, conversation["venue_id"])
+        self.assertEqual(2, self.conn.execute(
+            "SELECT count(*) FROM events WHERE conversation_id=?", (conversation["id"],)
+        ).fetchone()[0])
 
     def test_incremental_history_advances_after_persistence(self):
         self.conn.execute(
