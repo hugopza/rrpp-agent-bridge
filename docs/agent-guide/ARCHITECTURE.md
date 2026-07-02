@@ -75,6 +75,8 @@ Mode changes MUST be authenticated, validated, and audited. Unknown or missing m
 
 New channels implement the inbound adapter contract and reuse normalization, persistence, policy, auditing, and dashboard paths. New actions require a typed payload, explicit policy coverage, executor idempotency, audit events, tests, and safe behavior in every mode.
 
+Instagram uses a separate public ingress process. It verifies the subscription token for GET requests and the raw-body HMAC signature for POST requests before parsing. Only text messages for the configured business account become events. Their channel-native conversation key is the exact recipient/sender pair; venue routing uses the recipient account ID and never message text. Sanitized webhook receipts retain only allowlisted message fields and delivery counts.
+
 The V1 technology stack and persistence choice are accepted in ADR-0002. Future API contracts, horizontal deployment topology, retention periods, and external connectors remain `Proposed` until recorded in `DECISIONS.md`.
 
 ## Implementation Mapping

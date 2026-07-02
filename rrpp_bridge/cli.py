@@ -45,7 +45,8 @@ def _prepare(settings: Settings):
 def main() -> None:
     parser = argparse.ArgumentParser(prog="rrpp-bridge")
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("init-db", "migrate", "status", "recover-stale", "web", "gmail-auth"):
+    for command in ("init-db", "migrate", "status", "recover-stale", "web",
+                    "instagram-webhook", "gmail-auth"):
         sub.add_parser(command)
     gmail_poll = sub.add_parser("gmail-poll")
     gmail_poll.add_argument("--once", action="store_true")
@@ -142,6 +143,14 @@ def main() -> None:
         app = Application(settings)
         print(f"Dashboard listening on http://{settings.host}:{settings.port}")
         with make_server(settings.host, settings.port, app) as server:
+            server.serve_forever()
+        return
+    if args.command == "instagram-webhook":
+        from .instagram_webhook import InstagramWebhookApplication
+        conn.close()
+        app = InstagramWebhookApplication(settings)
+        print(f"Instagram webhook listening on http://{settings.host}:{settings.instagram_port}")
+        with make_server(settings.host, settings.instagram_port, app) as server:
             server.serve_forever()
         return
     if args.command == "maintenance":

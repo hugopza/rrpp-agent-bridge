@@ -78,6 +78,14 @@ Place the installed-application OAuth client at `secrets/gmail-oauth-client.json
 
 The requested scope is only `gmail.readonly`. Credentials remain under ignored `secrets/`; the connector reads `INBOX`, never sends, deletes, archives, labels, marks read, or otherwise changes email. After authorization, `scripts/run-local.ps1` automatically starts the Gmail poller beside web and worker.
 
+## Instagram inbound connector
+
+Instagram DM support is inbound-only. Configure the variables in `.env.example`, migrate the database, and start the dedicated webhook process through the `instagram` Compose profile. Valid signed text messages enter the same conversation, worker, draft, and human-review flow as other channels. No Instagram API client or reply sender exists.
+
+For local callback testing, run `python -m rrpp_bridge instagram-webhook`; it listens on the configured loopback port and remains unavailable while `RRPP_INSTAGRAM_ENABLED=false`.
+
+Create venue routes with channel `instagram` and the exact Instagram business account ID as recipient. Unmatched conversations remain `Sense assignar`. See `docs/DEPLOYMENT.md` for the public HTTPS boundary and Meta setup checklist.
+
 ## Tests
 
 ```powershell

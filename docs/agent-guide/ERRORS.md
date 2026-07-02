@@ -16,6 +16,30 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-07-02 - Git commit attempted inside read-only metadata sandbox
+
+- Context: Committing the completed Instagram inbound increment.
+- Error: Git could not create `.git/index.lock`, so neither staging nor commit occurred.
+- Cause: Repository content is writable in the managed sandbox, but Git metadata is mounted read-only unless the Git command uses its approved elevated permission.
+- Correction: Verify the worktree remained unstaged, then rerun `git add` and `git commit` through the approved Git escalation.
+- Prevention: In this workspace, use the approved elevated Git command path for staging and commits instead of first attempting them in the filesystem sandbox.
+
+### 2026-07-02 - Isolated package build attempted blocked network access
+
+- Context: Final package verification for the Instagram inbound increment.
+- Error: `python -m build` created an isolated environment and failed while trying to download Hatchling from PyPI.
+- Cause: The managed execution environment blocks outbound package-index access even though the build backend is already installed in the project virtual environment.
+- Correction: Repeat package verification with `python -m build --no-isolation` using the pinned local build tooling.
+- Prevention: In this managed workspace, use non-isolated builds after confirming the declared build backend is installed; reserve isolated network builds for CI with package-index access.
+
+### 2026-07-02 - Queue transaction refactor introduced invalid indentation
+
+- Context: Extracting reusable in-transaction event enqueueing for batched Instagram webhooks.
+- Error: The first patch left the insertion block over-indented and `compileall` rejected `queue.py`.
+- Cause: A nested transaction block was removed without realigning its former body in the same edit.
+- Correction: Realign the full insertion block and compile the package before continuing.
+- Prevention: After changing Python block structure, run `compileall` immediately before layering further edits.
+
 ### 2026-06-21 - PowerShell expanded container shell substitutions
 
 - Context: Running an ephemeral `age` verification through `docker run ... sh -c` on Windows.

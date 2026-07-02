@@ -7,7 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 VALID_MODES = frozenset({"shadow", "dry-run", "canary", "live"})
-ENV_KEY = re.compile(r"^RRPP_[A-Z0-9_]+$")
+ENV_KEY = re.compile(r"^(?:RRPP_[A-Z0-9_]+|INSTAGRAM_(?:VERIFY_TOKEN|APP_SECRET|PAGE_ACCESS_TOKEN|BUSINESS_ACCOUNT_ID))$")
 
 
 def load_local_env(path: Path = Path(".env")) -> None:
@@ -48,6 +48,12 @@ class Settings:
     backup_age_recipient: str = ""
     backup_hour: int = 3
     backup_timezone: str = "Europe/Madrid"
+    instagram_enabled: bool = False
+    instagram_verify_token: str = ""
+    instagram_app_secret: str = ""
+    instagram_page_access_token: str = ""
+    instagram_business_account_id: str = ""
+    instagram_port: int = 8081
 
     @classmethod
     def from_env(cls, *, require_auth: bool = True) -> "Settings":
@@ -70,12 +76,23 @@ class Settings:
             gmail_poll_seconds = int(os.getenv("RRPP_GMAIL_POLL_SECONDS", "60"))
             gmail_batch_size = int(os.getenv("RRPP_GMAIL_BATCH_SIZE", "50"))
             backup_hour = int(os.getenv("RRPP_BACKUP_HOUR", "3"))
+            instagram_port = int(os.getenv("RRPP_INSTAGRAM_PORT", "8081"))
         except ValueError as exc:
             raise ValueError("Port, max attempts, and lease seconds must be integers") from exc
         if (not 1 <= port <= 65535 or max_attempts < 1 or lease_seconds < 5
                 or gmail_poll_seconds < 15 or not 1 <= gmail_batch_size <= 500
-                or not 0 <= backup_hour <= 23):
+                or not 0 <= backup_hour <= 23 or not 1 <= instagram_port <= 65535):
             raise ValueError("Invalid port, retry, lease, or Gmail polling configuration")
+        instagram_enabled_value = os.getenv("RRPP_INSTAGRAM_ENABLED", "false").strip().casefold()
+        if instagram_enabled_value not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
+            raise ValueError("RRPP_INSTAGRAM_ENABLED must be a boolean value")
+        instagram_enabled = instagram_enabled_value in {"1", "true", "yes", "on"}
+        instagram_verify_token = os.getenv("INSTAGRAM_VERIFY_TOKEN", "").strip()
+        instagram_app_secret = os.getenv("INSTAGRAM_APP_SECRET", "").strip()
+        instagram_business_account_id = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "").strip()
+        if instagram_enabled and not all((instagram_verify_token, instagram_app_secret,
+                                          instagram_business_account_id)):
+            raise ValueError("Enabled Instagram webhook requires verify token, app secret, and business account ID")
         canary_senders = frozenset(
             value.strip().casefold() for value in os.getenv("RRPP_CANARY_SENDERS", "").split(",")
             if value.strip()
@@ -105,4 +122,10 @@ class Settings:
             backup_age_recipient=os.getenv("RRPP_BACKUP_AGE_RECIPIENT", "").strip(),
             backup_hour=backup_hour,
             backup_timezone=backup_timezone,
+            instagram_enabled=instagram_enabled,
+            instagram_verify_token=instagram_verify_token,
+            instagram_app_secret=instagram_app_secret,
+            instagram_page_access_token=os.getenv("INSTAGRAM_PAGE_ACCESS_TOKEN", "").strip(),
+            instagram_business_account_id=instagram_business_account_id,
+            instagram_port=instagram_port,
         )

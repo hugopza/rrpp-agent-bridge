@@ -69,6 +69,21 @@ docker compose --env-file .env.docker run --rm -v /trusted/temporary/rrpp-backup
 
 Do not copy the identity into a persistent VPS directory. The restore command validates the source, creates a `pre_restore` safety backup, restores with SQLite's backup API, checks integrity, and rolls back automatically if validation fails.
 
+## Instagram inbound webhook
+
+Instagram requires a professional Instagram account, a linked Facebook Page, a Meta Developer App, the applicable messaging/webhook product, webhook subscriptions, permissions, and any review required for accounts outside the app's test roles. Configure `INSTAGRAM_VERIFY_TOKEN`, `INSTAGRAM_APP_SECRET`, and `INSTAGRAM_BUSINESS_ACCOUNT_ID`; `INSTAGRAM_PAGE_ACCESS_TOKEN` is reserved for future official API use and is not used for inbound processing.
+
+Enable the connector only after configuration is complete:
+
+```text
+RRPP_INSTAGRAM_ENABLED=true
+docker compose --env-file .env.docker --profile instagram up -d instagram
+```
+
+The container binds the ingress service to VPS loopback port 8081. Terminate TLS in a reverse proxy and forward only the exact public path `/webhooks/instagram` to `http://127.0.0.1:8081/webhooks/instagram`. Do not proxy port 8080 or any dashboard path. Register the resulting HTTPS URL and verify token in the Meta App dashboard, then subscribe only to the DM webhook fields needed by the connector.
+
+This version accepts signed inbound text events, creates reviewable drafts, and never sends a reply. Attachments, profile lookup, proactive messages, cold outreach, and promotional sending are not implemented.
+
 ## Routine Checks
 
 - Review `Sistema` for stale services, errors, dead letters, and backup age.

@@ -72,6 +72,13 @@ services:
       retries: 3
       start_period: 30s
 
+  instagram:
+    <<: *rrpp-service
+    profiles: ["instagram"]
+    command: ["gunicorn", "--bind", "0.0.0.0:8081", "--workers", "1", "--threads", "4", "--timeout", "30", "--graceful-timeout", "30", "rrpp_bridge.instagram_wsgi:application"]
+    ports:
+      - "127.0.0.1:${RRPP_INSTAGRAM_PUBLIC_PORT:-8081}:8081"
+
   migrate:
     <<: *rrpp-service
     profiles: ["tools"]

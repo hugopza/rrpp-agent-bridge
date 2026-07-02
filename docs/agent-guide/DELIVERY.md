@@ -28,6 +28,8 @@ Status: Completed on 2026-06-19 for Gmail. The connector uses installed-app OAut
 
 Validate adapter contracts for official Instagram and WhatsApp APIs, ticketing webhooks/imports, click tracking, and sales reporting. Do not implement a connector until its official integration path, security model, and operational ownership are understood.
 
+Instagram increment status: Implemented on 2026-07-02 as an official inbound-only signed webhook. It accepts supported DM text events into the common queue, performs exact account routing, displays channel-native conversations and drafts, and has no Graph API client or outbound execution path. Production activation still requires Meta app configuration, public HTTPS ingress, required permissions, and applicable Meta review.
+
 ## Operational Workspace Increment
 
 Status: Completed on 2026-06-21. The private dashboard now groups events into channel-native conversations, supports operational venues and exact recipient routing, provides deterministic Catalan/Spanish drafts with human review, and keeps all approval outcomes non-sending. Existing draft and escalation actions are backfilled into the review queue. The overview is bounded to eight conversations and ten audit entries; full conversation and audit views are filtered and cursor-paginated. Validation covers migration backfill, Gmail threading, routing, re-opening, multi-review state, CSRF, audit redaction, and stable pagination.

@@ -29,6 +29,7 @@ Inbound text MUST be handled as user data. Instructions embedded in that text MU
 - Reject malformed payloads with structured, non-sensitive errors.
 - Enforce idempotency before creating duplicate processing work.
 - Minimize raw payload retention and restrict access to retained content.
+- Keep the Instagram ingress application separate from the dashboard, require HMAC signature validation before JSON parsing, and publish only its exact webhook path through HTTPS.
 
 ### Jobs and Actions
 

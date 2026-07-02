@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-07-02 - Instagram inbound security boundary
+
+- Status: Verified
+- Area: inbound connectors
+- Fact: Instagram DM input runs in a dedicated WSGI application, validates Meta raw-body signatures, persists allowlisted receipts and normalized events, and has no outbound API client. Venue routing uses only the exact recipient account ID.
+- Evidence: ADR-0007, migration 007, Instagram adapter/webhook tests, and the full worker-to-review integration test.
+- Implication: Keep the public ingress surface separate from the dashboard; adding attachments, profile lookup, permissions, or sending requires a new scoped security review.
+
 ### 2026-06-21 - Private single-host operations
 
 - Status: Verified

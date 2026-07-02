@@ -26,29 +26,40 @@ class JobQueue:
         self.conn = conn
 
     def enqueue(self, event: NormalizedEvent) -> tuple[str, bool]:
+        with transaction(self.conn, immediate=True):
+            return self.enqueue_in_transaction(event)
+
+    def enqueue_in_transaction(self, event: NormalizedEvent) -> tuple[str, bool]:
         event_id, job_id, timestamp = _id("evt"), _id("job"), utc_now()
+        existing = self.conn.execute(
+            "SELECT id FROM events WHERE channel=? AND external_message_id=?",
+            (event.channel, event.external_message_id),
+        ).fetchone()
+        if existing is not None:
+            record(self.conn, f"adapter.{event.channel}", "event.duplicate", "event",
+                   existing["id"], "ignored")
+            return str(existing["id"]), False
         try:
-            with transaction(self.conn, immediate=True):
-                conversation_id = ensure_conversation(
-                    self.conn, event.channel, event.work_key, event.recipient,
-                    event.received_at or timestamp, f"adapter.{event.channel}",
-                )
-                self.conn.execute(
-                    "INSERT INTO events(id,channel,external_message_id,sender,recipient,subject,body_text,"
-                    "received_at,ingested_at,metadata_json,work_key,status,conversation_id) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (event_id, event.channel, event.external_message_id, event.sender,
-                     event.recipient, event.subject, event.body_text, event.received_at or timestamp, timestamp,
-                     json.dumps(event.metadata, separators=(",", ":")), event.work_key, "queued",
-                     conversation_id),
-                )
-                self.conn.execute(
-                    "INSERT INTO jobs(id,event_id,work_key,state,available_at,created_at,updated_at) "
-                    "VALUES(?,?,?,'queued',?,?,?)",
-                    (job_id, event_id, event.work_key, timestamp, timestamp, timestamp),
-                )
-                record(self.conn, f"adapter.{event.channel}", "event.accepted", "event",
-                       event_id, "accepted", {"channel": event.channel, "job_id": job_id})
+            conversation_id = ensure_conversation(
+                self.conn, event.channel, event.work_key, event.recipient,
+                event.received_at or timestamp, f"adapter.{event.channel}",
+            )
+            self.conn.execute(
+                "INSERT INTO events(id,channel,external_message_id,sender,recipient,subject,body_text,"
+                "received_at,ingested_at,metadata_json,work_key,status,conversation_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (event_id, event.channel, event.external_message_id, event.sender,
+                 event.recipient, event.subject, event.body_text, event.received_at or timestamp, timestamp,
+                 json.dumps(event.metadata, separators=(",", ":")), event.work_key, "queued",
+                 conversation_id),
+            )
+            self.conn.execute(
+                "INSERT INTO jobs(id,event_id,work_key,state,available_at,created_at,updated_at) "
+                "VALUES(?,?,?,'queued',?,?,?)",
+                (job_id, event_id, event.work_key, timestamp, timestamp, timestamp),
+            )
+            record(self.conn, f"adapter.{event.channel}", "event.accepted", "event",
+                   event_id, "accepted", {"channel": event.channel, "job_id": job_id})
             return event_id, True
         except sqlite3.IntegrityError:
             row = self.conn.execute(

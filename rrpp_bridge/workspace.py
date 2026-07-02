@@ -93,7 +93,7 @@ def update_venue(conn: sqlite3.Connection, venue_id: str, name: str, language: s
 def add_route(conn: sqlite3.Connection, venue_id: str, channel: str, recipient: str,
               actor: str) -> str:
     channel, recipient = channel.strip().casefold(), recipient.strip()
-    if channel not in {"gmail", "local"} or not recipient or len(recipient) > 500:
+    if channel not in {"gmail", "instagram", "local"} or not recipient or len(recipient) > 500:
         raise ValueError("Invalid route channel or recipient")
     route_id, timestamp = _id("route"), utc_now()
     with transaction(conn, immediate=True):

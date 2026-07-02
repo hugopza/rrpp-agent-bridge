@@ -19,6 +19,7 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 | ADR-0004 | Use Gmail API as the first read-only connector | Accepted | 2026-06-19 |
 | ADR-0005 | Add operational venues, conversations, and human review | Accepted | 2026-06-21 |
 | ADR-0006 | Operate a private single-host deployment | Accepted | 2026-06-21 |
+| ADR-0007 | Add a signed inbound-only Instagram webhook | Accepted | 2026-07-02 |
 
 ## ADR-0001: Persistent Agent Guide
 
@@ -77,6 +78,16 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 - Alternatives: A public reverse proxy increases the attack surface and requires a separate public-deployment review. PostgreSQL and distributed supervision are unnecessary for the current single-owner load. Dashboard restore controls would expose a destructive operation to the web. Same-disk backups alone do not address host loss.
 - Consequences: SQLite remains limited to one host. The owner must move encrypted exports off-host and retain the `age` private identity outside the VPS. Docker is optional for Windows development but becomes the documented VPS runtime.
 - Validation: Heartbeat thresholds, error redaction, WAL-safe backup, retention, corruption detection, encrypted export, offline restoration, container configuration, dashboard privacy, and full regression tests.
+
+## ADR-0007: Signed Inbound-Only Instagram Webhook
+
+- Status: Accepted
+- Date: 2026-07-02
+- Context: Instagram DM ingestion requires a public HTTPS callback while the operational dashboard must remain private and no external response path is authorized.
+- Decision: Run a dedicated WSGI ingress application that exposes only `/webhooks/instagram`, requires Meta verification on GET and `X-Hub-Signature-256` HMAC validation on POST, and fails closed unless explicitly enabled with complete environment configuration. Normalize supported text messages into the shared durable queue, group them by recipient and sender, route only by exact configured recipient account, and retain a bounded allowlisted webhook receipt. Do not create an Instagram Graph API client or outbound executor.
+- Alternatives: Adding the route to the dashboard application would risk publishing authenticated operational routes. Accepting unsigned payloads would allow event forgery. Polling, scraping, or browser automation would bypass the official integration and are prohibited.
+- Consequences: Deployment needs a narrow HTTPS reverse-proxy route to the ingress service. Instagram content remains untrusted and drafts require human review. Unsupported webhook event types are acknowledged and audited without creating work.
+- Validation: Tests cover verification, signatures, malformed input, normalization, routing, duplicate delivery, the worker/review flow, and absence of outbound network calls even in live mode.
 
 ## ADR Template
 

@@ -75,6 +75,11 @@ class Application:
     @staticmethod
     def _respond(start_response, status: str, body: str, headers=None,
                  content_type: str = "text/html; charset=utf-8"):
+        body = body.replace(
+            '<option value="gmail">Gmail</option><option value="local">Simulador</option>',
+            '<option value="gmail">Gmail</option><option value="instagram">Instagram</option>'
+            '<option value="local">Simulador</option>',
+        )
         encoded = body.encode("utf-8")
         base = [("Content-Type", content_type), ("Content-Length", str(len(encoded))),
                 ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"),
@@ -106,7 +111,8 @@ class Application:
     def _badge(value: object, label: str | None = None) -> str:
         text = str(value or "unknown")
         css = re.sub(r"[^a-z0-9_-]", "-", text.casefold())
-        return f'<span class="badge {css}">{_escape(label or text.replace("_", " "))}</span>'
+        channel_labels = {"gmail": "Gmail", "instagram": "Instagram", "local": "Simulador"}
+        return f'<span class="badge {css}">{_escape(label or channel_labels.get(text, text.replace("_", " ")))}</span>'
 
     def _header(self, csrf: str, active: str = "summary") -> str:
         links = (("summary", "/", "Resum"), ("conversations", "/conversations", "Converses"),
@@ -491,7 +497,7 @@ class Application:
         cursor = query.get("cursor", "")
         if status not in {"", "open", "pending_review", "resolved"}:
             raise ValueError("Invalid conversation status filter")
-        if channel not in {"", "gmail", "local"}:
+        if channel not in {"", "gmail", "instagram", "local"}:
             raise ValueError("Invalid channel filter")
         clauses, params = ["1=1"], []
         if status:
@@ -542,7 +548,7 @@ class Application:
         filters = f"""<form method="get" class="filter-bar">
           <label>Cerca<input name="q" value="{_escape(search)}" placeholder="Remitent, assumpte o text"></label>
           <label>Discoteca<select name="venue">{venue_options}</select></label>
-          <label>Canal<select name="channel"><option value="">Tots</option><option value="gmail"{" selected" if channel == "gmail" else ""}>Gmail</option><option value="local"{" selected" if channel == "local" else ""}>Simulador</option></select></label>
+          <label>Canal<select name="channel"><option value="">Tots</option><option value="gmail"{" selected" if channel == "gmail" else ""}>Gmail</option><option value="instagram"{" selected" if channel == "instagram" else ""}>Instagram</option><option value="local"{" selected" if channel == "local" else ""}>Simulador</option></select></label>
           <label>Estat<select name="status"><option value="">Tots</option>{''.join(f'<option value="{s}"{" selected" if status == s else ""}>{s.replace("_", " ")}</option>' for s in ("open","pending_review","resolved"))}</select></label>
           <button>Filtrar</button></form>"""
         next_link = ""
