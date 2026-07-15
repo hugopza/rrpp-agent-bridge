@@ -16,6 +16,22 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-07-15 - Windows blocked structured local-port inspection
+
+- Context: Restarting the local Instagram webhook after enabling its configured inbound connector.
+- Error: `Get-NetTCPConnection` returned access denied while querying the listener on port 8081.
+- Cause: The managed Windows session does not grant the CIM permissions required by that cmdlet for this inspection.
+- Correction: Use the read-only `netstat -ano` output to identify the listener before restarting the known webhook process.
+- Prevention: On this workstation, prefer `netstat` for local port diagnostics unless elevated CIM access is explicitly available.
+
+### 2026-07-15 - Background process helpers have Windows environment limits
+
+- Context: Restarting and inspecting the local Instagram webhook and Cloudflare tunnel.
+- Error: `Start-Process` with output redirection failed on duplicate `Path`/`PATH` environment keys, and the retired `wmic` tool was unavailable for command-line inspection.
+- Cause: The managed shell exposes case-variant environment keys and this Windows installation does not include WMIC.
+- Correction: Launch the interactive webhook in its own console and validate it through `netstat` plus an HTTP request.
+- Prevention: Do not depend on redirected `Start-Process` or WMIC in local runbooks; document the intended Cloudflare origin port explicitly.
+
 ### 2026-07-02 - Git commit attempted inside read-only metadata sandbox
 
 - Context: Committing the completed Instagram inbound increment.
