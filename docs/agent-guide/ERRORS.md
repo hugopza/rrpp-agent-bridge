@@ -191,3 +191,11 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Cause: The managed execution environment restricts outbound sockets even though the local webhook and Cloudflare metrics endpoints are reachable.
 - Correction: Repeat the non-mutating public verification through the approved elevated network command; it returned `200` with the expected challenge.
 - Prevention: Treat a sandbox socket-denied error as an environment limitation, not a connector failure. Use the approved network path for public round-trip diagnostics and never print verification tokens.
+
+### 2026-07-16 - Source inspection assumed migration filenames
+
+- Context: Inspecting the runtime-mode schema before planning the outbound Instagram increment.
+- Error: The inspection command referenced migration filenames that did not exist and returned PowerShell path errors.
+- Cause: The command inferred descriptive filenames instead of first using the repository's actual migration inventory.
+- Correction: List `rrpp_bridge/sql/` and inspect the recorded filenames before reading migration contents.
+- Prevention: Never guess repository filenames in diagnostic commands; use `rg --files` or a directory listing first.
