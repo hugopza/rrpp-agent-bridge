@@ -101,6 +101,15 @@ class BridgeTests(unittest.TestCase):
             "SELECT status FROM conversations WHERE id=?", (row["id"],)
         ).fetchone()[0])
 
+    def test_venue_slug_is_generated_from_normal_name_or_optional_identifier(self):
+        first_id = create_venue(self.conn, "Sala Nòrd", "", "ca", "admin")
+        second_id = create_venue(self.conn, "Club Central", "Club Central 2026", "es", "admin")
+        rows = self.conn.execute(
+            "SELECT id,slug FROM venues WHERE id IN (?,?) ORDER BY slug", (first_id, second_id)
+        ).fetchall()
+        self.assertEqual([(second_id, "club-central-2026"), (first_id, "sala-nord")],
+                         [(row["id"], row["slug"]) for row in rows])
+
     def test_draft_review_is_versioned_prepared_and_never_sent(self):
         set_mode(self.conn, "live", "test")
         ingest_local(self.conn, self.payload())
@@ -439,7 +448,11 @@ class WebTests(unittest.TestCase):
 
     def test_dashboard_manages_venue_routing_and_human_review_with_csrf(self):
         cookie, csrf = self.login()
-        venue_body = urlencode({"csrf": csrf, "name": "Sala Nord", "slug": "sala-nord", "language": "ca"})
+        page_result, venues_page = self.request("/venues", cookie=cookie)
+        self.assertEqual("200 OK", page_result["status"])
+        self.assertIn("Identificador intern (opcional)", venues_page)
+        self.assertNotIn('name="slug" required', venues_page)
+        venue_body = urlencode({"csrf": csrf, "name": "Sala Nord", "slug": "", "language": "ca"})
         created, _ = self.request("/venues", "POST", venue_body, cookie)
         self.assertEqual("303 See Other", created["status"])
         conn = connect(self.path)

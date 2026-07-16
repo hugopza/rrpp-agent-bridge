@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import unicodedata
 import uuid
 
 from .audit import record, utc_now
@@ -13,6 +14,12 @@ REVIEW_STATUSES = frozenset({"pending", "prepared", "rejected", "resolved"})
 
 def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _venue_slug(value: str) -> str:
+    """Create a stable ASCII identifier from a dashboard-provided venue label."""
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "-", ascii_value.casefold()).strip("-")
 
 
 def route_venue(conn: sqlite3.Connection, channel: str, recipient: str) -> str | None:
@@ -55,15 +62,19 @@ def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: st
 
 def create_venue(conn: sqlite3.Connection, name: str, slug: str, language: str,
                  actor: str) -> str:
-    name, slug, language = name.strip(), slug.strip().casefold(), language.strip().casefold()
+    name, language = name.strip(), language.strip().casefold()
+    slug = _venue_slug(slug or name)
     if not name or len(name) > 120:
-        raise ValueError("Venue name must contain 1 to 120 characters")
+        raise ValueError("El nom de la discoteca ha de tenir entre 1 i 120 caràcters")
     if not SLUG_RE.fullmatch(slug):
-        raise ValueError("Venue slug must use lowercase letters, numbers, and hyphens")
+        raise ValueError("No s'ha pogut crear un identificador vàlid a partir del nom")
     if language not in {"ca", "es"}:
-        raise ValueError("Venue language must be ca or es")
+        raise ValueError("L'idioma de la discoteca ha de ser català o castellà")
     venue_id, timestamp = _id("ven"), utc_now()
     with transaction(conn, immediate=True):
+        existing = conn.execute("SELECT id FROM venues WHERE slug=?", (slug,)).fetchone()
+        if existing:
+            raise ValueError("Ja existeix una discoteca amb aquest identificador")
         conn.execute(
             "INSERT INTO venues VALUES(?,?,?,?,1,?,?)",
             (venue_id, slug, name, language, timestamp, timestamp),

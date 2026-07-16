@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-07-16 - Venue identifiers are operator-friendly
+
+- Status: Verified
+- Area: dashboard workspace
+- Fact: Creating a venue accepts a normal display name and generates its stable ASCII identifier automatically; an optional identifier is normalized with the same rules.
+- Evidence: `workspace.create_venue`, the authenticated dashboard form, and `test_venue_slug_is_generated_from_normal_name_or_optional_identifier`.
+- Implication: Routing remains based on exact configured recipient identities, while operators do not need to know the internal identifier format to create a venue.
+
 ### 2026-07-02 - Instagram inbound security boundary
 
 - Status: Verified

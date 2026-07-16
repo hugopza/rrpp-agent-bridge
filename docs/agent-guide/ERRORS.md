@@ -175,3 +175,11 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Cause: Tests encoded a moving implementation count and did not protect resource cleanup with `finally`.
 - Correction: Expected ranges derive from `latest_version()`, and database connections always close through `finally` blocks.
 - Prevention: Migration tests may pin their starting version but must derive the target version and guarantee cleanup on assertion failure.
+
+### 2026-07-16 - Venue form exposed a technical browser validation error
+
+- Context: An operator tried to create a venue through the private dashboard.
+- Error: The browser blocked the form with its generic format warning because the required internal identifier accepted only lowercase ASCII slug syntax.
+- Cause: The dashboard required an implementation detail from the operator and relied on native pattern validation without explaining it in the UI.
+- Correction: The identifier is now optional and derived safely from the venue name; supplied labels are normalized, and the form explains the resulting value.
+- Prevention: Dashboard forms must use operator-facing labels and defaults. Generate technical identifiers from human input where possible, and test the browser-facing form contract as well as server validation.
