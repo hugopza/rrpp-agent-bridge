@@ -13,13 +13,15 @@ from urllib.parse import parse_qs, quote, urlencode
 from wsgiref.util import setup_testing_defaults
 
 from .config import Settings
+from .catalog import create_event, create_offer
 from .db import connect, current_version, latest_version, prepare_runtime
+from .delivery import create_human_reply
 from .queue import JobQueue
 from .runtime import get_mode, initialize_mode, set_mode
 from .operations import service_health
 from .service import ingest_local
 from .workspace import (add_route, assign_conversation, create_venue, disable_route, edit_review,
-                        set_conversation_status, transition_review, update_venue)
+                        set_bot_paused, set_conversation_status, transition_review, update_venue)
 
 
 def _escape(value: object) -> str:
@@ -75,11 +77,6 @@ class Application:
     @staticmethod
     def _respond(start_response, status: str, body: str, headers=None,
                  content_type: str = "text/html; charset=utf-8"):
-        body = body.replace(
-            '<option value="gmail">Gmail</option><option value="local">Simulador</option>',
-            '<option value="gmail">Gmail</option><option value="instagram">Instagram</option>'
-            '<option value="local">Simulador</option>',
-        )
         encoded = body.encode("utf-8")
         base = [("Content-Type", content_type), ("Content-Length", str(len(encoded))),
                 ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"),
@@ -111,7 +108,7 @@ class Application:
     def _badge(value: object, label: str | None = None) -> str:
         text = str(value or "unknown")
         css = re.sub(r"[^a-z0-9_-]", "-", text.casefold())
-        channel_labels = {"gmail": "Gmail", "instagram": "Instagram", "local": "Simulador"}
+        channel_labels = {"instagram": "Instagram", "local": "Simulador"}
         return f'<span class="badge {css}">{_escape(label or channel_labels.get(text, text.replace("_", " ")))}</span>'
 
     def _header(self, csrf: str, active: str = "summary") -> str:
@@ -166,7 +163,9 @@ class Application:
                 form = self._csrf_form(environ, csrf)
                 conn = self._connect()
                 try:
-                    event_id, created = ingest_local(conn, form)
+                    event_id, created = ingest_local(
+                        conn, form, self.settings.response_debounce_seconds
+                    )
                 finally:
                     conn.close()
                 return self._respond(start_response, "303 See Other", "", [
@@ -194,17 +193,29 @@ class Application:
             match = re.fullmatch(r"/(events|jobs|actions)/([A-Za-z0-9_-]+)", path)
             if match and method == "GET":
                 return self._detail(start_response, match.group(1), match.group(2))
-            match = re.fullmatch(r"/conversations/([A-Za-z0-9_-]+)/(assign|resolve|reopen)", path)
+            match = re.fullmatch(
+                r"/conversations/([A-Za-z0-9_-]+)/(assign|resolve|reopen|pause|resume|reply)", path
+            )
             if match and method == "POST":
                 form = self._csrf_form(environ, csrf)
                 conn = self._connect()
                 try:
                     actor = f"dashboard:{self.settings.dashboard_user}"
-                    if match.group(2) == "assign":
+                    operation = match.group(2)
+                    if operation == "assign":
                         venue_id = form.get("venue_id", "") or None
                         changed = assign_conversation(conn, match.group(1), venue_id, actor)
+                    elif operation == "pause":
+                        changed = set_bot_paused(
+                            conn, match.group(1), True, actor, form.get("reason", "")
+                        )
+                    elif operation == "resume":
+                        changed = set_bot_paused(conn, match.group(1), False, actor)
+                    elif operation == "reply":
+                        create_human_reply(conn, match.group(1), form.get("text", ""), actor)
+                        changed = True
                     else:
-                        status = "resolved" if match.group(2) == "resolve" else "open"
+                        status = "resolved" if operation == "resolve" else "open"
                         changed = set_conversation_status(conn, match.group(1), status, actor)
                 finally:
                     conn.close()
@@ -216,16 +227,36 @@ class Application:
                 return self._conversation(start_response, csrf, match.group(1))
             if path == "/conversations" and method == "GET":
                 return self._conversations(start_response, csrf, self._query(environ))
-            match = re.fullmatch(r"/reviews/([A-Za-z0-9_-]+)/(edit|approve|reject|resolve)", path)
+            match = re.fullmatch(r"/reviews/([A-Za-z0-9_-]+)/(edit|send|reject|resolve)", path)
             if match and method == "POST":
                 form = self._csrf_form(environ, csrf)
                 conn = self._connect()
                 try:
                     actor = f"dashboard:{self.settings.dashboard_user}"
                     operation = match.group(2)
-                    changed = edit_review(conn, match.group(1), form.get("text", ""), actor) if operation == "edit" else transition_review(
-                        conn, match.group(1), {"approve": "prepared", "reject": "rejected", "resolve": "resolved"}[operation], actor
-                    )
+                    if operation == "edit":
+                        changed = edit_review(conn, match.group(1), form.get("text", ""), actor)
+                    elif operation == "send":
+                        review = conn.execute(
+                            "SELECT r.current_text,e.conversation_id FROM action_reviews r "
+                            "JOIN actions a ON a.id=r.action_id JOIN events e ON e.id=a.event_id "
+                            "WHERE r.id=? AND r.status='pending' AND r.kind='draft'",
+                            (match.group(1),),
+                        ).fetchone()
+                        if review:
+                            create_human_reply(
+                                conn, review["conversation_id"], review["current_text"], actor
+                            )
+                            changed = transition_review(
+                                conn, match.group(1), "prepared", actor
+                            )
+                        else:
+                            changed = False
+                    else:
+                        changed = transition_review(
+                            conn, match.group(1),
+                            {"reject": "rejected", "resolve": "resolved"}[operation], actor,
+                        )
                 finally:
                     conn.close()
                 if not changed:
@@ -235,6 +266,32 @@ class Application:
                 return self._reviews(start_response, csrf, self._query(environ))
             if path == "/activity" and method == "GET":
                 return self._activity(start_response, csrf, self._query(environ))
+            if path == "/catalog/events" and method == "POST":
+                form = self._csrf_form(environ, csrf)
+                conn = self._connect()
+                try:
+                    create_event(
+                        conn, form.get("venue_id", ""), form.get("name", ""),
+                        form.get("starts_at", ""), form.get("ends_at", ""),
+                        f"dashboard:{self.settings.dashboard_user}",
+                    )
+                finally:
+                    conn.close()
+                return self._respond(start_response, "303 See Other", "", [("Location", "/venues")])
+            if path == "/catalog/offers" and method == "POST":
+                form = self._csrf_form(environ, csrf)
+                conn = self._connect()
+                try:
+                    create_offer(
+                        conn, form.get("event_id", ""), form.get("name", ""),
+                        form.get("ticket_type", ""), form.get("price", ""),
+                        form.get("currency", "EUR"), form.get("promotion_text", ""),
+                        form.get("conditions", ""), form.get("availability", "unknown"),
+                        form.get("link", ""), f"dashboard:{self.settings.dashboard_user}",
+                    )
+                finally:
+                    conn.close()
+                return self._respond(start_response, "303 See Other", "", [("Location", "/venues")])
             if path == "/venues" and method == "POST":
                 form = self._csrf_form(environ, csrf)
                 conn = self._connect()
@@ -326,7 +383,7 @@ class Application:
 </main>"""
         return self._respond(start_response, "200 OK", self._page("Accés privat", content))
 
-    def _dashboard(self, start_response, csrf: str):
+    def _dashboard_legacy(self, start_response, csrf: str):
         conn = self._connect()
         try:
             mode = get_mode(conn)
@@ -491,7 +548,95 @@ class Application:
 </div>"""
         return self._respond(start_response, "200 OK", self._page("RRPP Agent Bridge", content))
 
-    def _conversations(self, start_response, csrf: str, query: dict[str, str]):
+    def _dashboard(self, start_response, csrf: str):
+        conn = self._connect()
+        try:
+            mode = get_mode(conn)
+            counts = {
+                "queued": conn.execute(
+                    "SELECT count(DISTINCT e.conversation_id) FROM jobs j JOIN events e ON e.id=j.event_id "
+                    "WHERE j.state='queued'"
+                ).fetchone()[0],
+                "processing": conn.execute(
+                    "SELECT count(DISTINCT e.conversation_id) FROM jobs j JOIN events e ON e.id=j.event_id "
+                    "WHERE j.state='processing'"
+                ).fetchone()[0],
+                "resolved": conn.execute(
+                    "SELECT count(*) FROM conversations WHERE status='resolved'"
+                ).fetchone()[0],
+                "human": conn.execute(
+                    "SELECT count(*) FROM conversations WHERE status='pending_review' OR bot_paused=1"
+                ).fetchone()[0],
+                "errors": conn.execute(
+                    "SELECT (SELECT count(*) FROM jobs WHERE state='dead_letter') + "
+                    "(SELECT count(*) FROM deliveries WHERE status IN ('failed','unknown'))"
+                ).fetchone()[0],
+            }
+            conversations = conn.execute(
+                "SELECT c.*,ra.external_account_id receiver_account,"
+                "(SELECT body_text FROM conversation_messages m WHERE m.conversation_id=c.id "
+                " ORDER BY m.created_at DESC,m.id DESC LIMIT 1) last_text,"
+                "CASE WHEN c.bot_paused=1 OR c.status='pending_review' THEN 'pending_human' "
+                "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id "
+                " WHERE e.conversation_id=c.id AND j.state='processing') THEN 'processing' "
+                "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id "
+                " WHERE e.conversation_id=c.id AND j.state='queued') THEN 'queued' "
+                "WHEN EXISTS(SELECT 1 FROM deliveries d WHERE d.conversation_id=c.id "
+                " AND d.status IN ('failed','unknown')) THEN 'error' ELSE c.status END operational_status "
+                "FROM conversations c LEFT JOIN receiver_accounts ra ON ra.id=c.receiver_account_id "
+                "ORDER BY c.last_message_at DESC,c.id DESC LIMIT 12"
+            ).fetchall()
+            failures = conn.execute(
+                "SELECT 'job' kind,id,last_error_code error,updated_at FROM jobs "
+                "WHERE state='dead_letter' UNION ALL "
+                "SELECT 'delivery',id,last_error_code,updated_at FROM deliveries "
+                "WHERE status IN ('failed','unknown') ORDER BY updated_at DESC LIMIT 20"
+            ).fetchall()
+            services = {row["service"]: row for row in conn.execute(
+                "SELECT * FROM service_status WHERE service IN ('worker','maintenance')"
+            )}
+        finally:
+            conn.close()
+        labels = {
+            "queued": "En cua", "processing": "Processant", "resolved": "Resoltes",
+            "human": "Pendent d'una persona", "errors": "Errors",
+        }
+        metrics = "".join(
+            f'<article class="card metric"><span class="metric-label">{labels[key]}</span>'
+            f'<strong class="metric-value">{counts[key]}</strong>{self._badge(key)}</article>'
+            for key in ("queued", "processing", "resolved", "human", "errors")
+        )
+        rows = "".join(
+            f'<tr><td><a href="/conversations/{_escape(row["id"])}"><span class="cell-main">'
+            f'<strong>{_escape(row["external_user_id"] or "Usuari desconegut")}</strong>'
+            f'<small>{_escape((row["last_text"] or "")[:120])}</small></span></a></td>'
+            f'<td>{self._badge(row["channel"])}</td><td>{_escape(row["receiver_account"] or "-")}</td>'
+            f'<td>{self._badge(row["operational_status"])}</td><td>{self._time(row["last_message_at"])}</td></tr>'
+            for row in conversations
+        ) or '<tr><td colspan="5" class="empty">Encara no hi ha converses.</td></tr>'
+        failure_rows = "".join(
+            f'<tr><td>{self._badge(row["kind"])}</td><td>{self._short_id(row["id"])}</td>'
+            f'<td>{_escape(row["error"] or "error_desconegut")}</td><td>{self._time(row["updated_at"])}</td></tr>'
+            for row in failures
+        ) or '<tr><td colspan="4" class="empty">No hi ha errors pendents.</td></tr>'
+        service_cards = "".join(
+            f'<article class="card service-card"><div class="card-header"><h2>{name.title()}</h2>'
+            f'{self._badge(service_health(services.get(name)))}</div>'
+            f'<p>{self._time(services[name]["heartbeat_at"] if name in services else None)}</p></article>'
+            for name in ("worker", "maintenance")
+        )
+        mode_label = {"shadow": "Nomes lectura", "dry-run": "Nomes lectura",
+                      "canary": "Prova limitada", "live": "Automatic"}.get(mode, mode)
+        body = f'''<section class="hero"><p class="eyebrow">Centre d'operacions</p><h1>Converses i respostes en temps real.</h1><p class="hero-copy">OpenClaw prepara la decisio; el bridge valida, envia i registra cada resultat.</p><div class="status-row">{self._badge(mode, mode_label)}{self._badge("success" if self.settings.openclaw_enabled else "warning", "OpenClaw actiu" if self.settings.openclaw_enabled else "OpenClaw desactivat")}{self._badge("success" if self.settings.instagram_send_enabled else "warning", "Instagram envia" if self.settings.instagram_send_enabled else "Instagram nomes llegeix")}</div></section>
+        <section class="section"><div class="grid metrics">{metrics}</div></section>
+        <section class="section grid two"><article class="card"><div class="card-header"><div><h2>Mode operatiu</h2><p>Nomes s'envien respostes que superen la politica.</p></div>{self._badge(mode, mode_label)}</div><form method="post" action="/admin/mode" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Comportament<select name="mode"><option value="shadow"{" selected" if mode in {"shadow", "dry-run"} else ""}>Nomes lectura</option><option value="live"{" selected" if mode == "live" else ""}>Automatic</option></select></label><button>Canviar mode</button></form></article><div class="grid">{service_cards}</div></section>
+        <section class="section card table-card"><div class="card-header"><div><h2>Converses operatives</h2><p>Les 12 converses mes recents.</p></div><a href="/conversations">Veure-les totes</a></div><div class="table-scroll"><table><thead><tr><th>Usuari i ultim missatge</th><th>Canal</th><th>Compte</th><th>Estat</th><th>Actualitzada</th></tr></thead><tbody>{rows}</tbody></table></div></section>
+        <section class="section card table-card"><div class="card-header"><div><h2>Errors que requereixen atencio</h2></div>{self._badge("danger" if failures else "success", str(len(failures)))}</div><div class="table-scroll"><table><thead><tr><th>Tipus</th><th>ID</th><th>Error</th><th>Data</th></tr></thead><tbody>{failure_rows}</tbody></table></div></section>'''
+        return self._respond(
+            start_response, "200 OK", self._layout("RRPP Agent Bridge", csrf, "summary", body)
+        )
+
+    def _conversations_legacy(self, start_response, csrf: str, query: dict[str, str]):
         status = query.get("status", "")
         channel = query.get("channel", "")
         venue = query.get("venue", "")
@@ -562,7 +707,72 @@ class Application:
         body += f'<section class="section card table-card"><div class="card-header"><div><h2>Converses</h2><p>Màxim 50 per pàgina.</p></div>{self._badge("info", str(len(rows)))}</div><div class="table-scroll"><table><thead><tr><th>Conversa</th><th>Canal</th><th>Discoteca</th><th>Estat</th><th>Missatges</th><th>Últim</th></tr></thead><tbody>{row_html}</tbody></table></div></section><div class="pagination">{next_link}</div>'
         return self._respond(start_response, "200 OK", self._layout("Converses · RRPP", csrf, "conversations", body))
 
-    def _conversation(self, start_response, csrf: str, conversation_id: str):
+    def _conversations(self, start_response, csrf: str, query: dict[str, str]):
+        status = query.get("status", "")
+        channel = query.get("channel", "")
+        search = query.get("q", "").strip()[:100]
+        if status not in {"", "queued", "processing", "resolved", "pending_human", "error"}:
+            raise ValueError("Invalid conversation status filter")
+        if channel not in {"", "instagram", "local"}:
+            raise ValueError("Invalid channel filter")
+        clauses, params = ["1=1"], []
+        if channel:
+            clauses.append("c.channel=?")
+            params.append(channel)
+        if search:
+            clauses.append(
+                "EXISTS(SELECT 1 FROM conversation_messages sm WHERE sm.conversation_id=c.id "
+                "AND (sm.author_id LIKE ? OR sm.body_text LIKE ?))"
+            )
+            term = f"%{search}%"
+            params.extend((term, term))
+        status_sql = {
+            "queued": "EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='queued')",
+            "processing": "EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='processing')",
+            "resolved": "c.status='resolved'",
+            "pending_human": "(c.status='pending_review' OR c.bot_paused=1)",
+            "error": "(EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='dead_letter') OR EXISTS(SELECT 1 FROM deliveries d WHERE d.conversation_id=c.id AND d.status IN ('failed','unknown')))",
+        }
+        if status:
+            clauses.append(status_sql[status])
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT c.*,ra.external_account_id receiver_account,"
+                "(SELECT body_text FROM conversation_messages m WHERE m.conversation_id=c.id "
+                " ORDER BY m.created_at DESC,m.id DESC LIMIT 1) last_text,"
+                "(SELECT count(*) FROM conversation_messages m WHERE m.conversation_id=c.id) message_count,"
+                "CASE WHEN c.bot_paused=1 OR c.status='pending_review' THEN 'pending_human' "
+                "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='processing') THEN 'processing' "
+                "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='queued') THEN 'queued' "
+                "WHEN EXISTS(SELECT 1 FROM deliveries d WHERE d.conversation_id=c.id AND d.status IN ('failed','unknown')) THEN 'error' ELSE c.status END operational_status "
+                "FROM conversations c LEFT JOIN receiver_accounts ra ON ra.id=c.receiver_account_id "
+                "WHERE " + " AND ".join(clauses) + " ORDER BY c.last_message_at DESC,c.id DESC LIMIT 50",
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+        row_html = "".join(
+            f'<tr><td><a href="/conversations/{_escape(row["id"])}"><span class="cell-main">'
+            f'<strong>{_escape(row["external_user_id"] or "Usuari desconegut")}</strong>'
+            f'<small>{_escape((row["last_text"] or "")[:120])}</small></span></a></td>'
+            f'<td>{self._badge(row["channel"])}</td><td>{_escape(row["receiver_account"] or "-")}</td>'
+            f'<td>{self._badge(row["operational_status"])}</td><td>{row["message_count"]}</td>'
+            f'<td>{self._time(row["last_message_at"])}</td></tr>' for row in rows
+        ) or '<tr><td colspan="6" class="empty">No hi ha converses amb aquests filtres.</td></tr>'
+        status_options = "".join(
+            f'<option value="{value}"{" selected" if status == value else ""}>{label}</option>'
+            for value, label in (("queued", "En cua"), ("processing", "Processant"),
+                                 ("resolved", "Resoltes"), ("pending_human", "Pendent persona"),
+                                 ("error", "Error"))
+        )
+        filters = f'''<form method="get" class="filter-bar"><label>Cerca<input name="q" value="{_escape(search)}" placeholder="Usuari o missatge"></label><label>Canal<select name="channel"><option value="">Tots</option><option value="instagram"{" selected" if channel == "instagram" else ""}>Instagram</option><option value="local"{" selected" if channel == "local" else ""}>Simulador</option></select></label><label>Estat<select name="status"><option value="">Tots</option>{status_options}</select></label><button>Filtrar</button></form>'''
+        body = f'''<section class="hero compact"><p class="eyebrow">Operacions</p><h1>Converses</h1><p class="hero-copy">Una conversa per compte receptor i usuari extern.</p></section>{filters}<section class="section card table-card"><div class="table-scroll"><table><thead><tr><th>Usuari i ultim missatge</th><th>Canal</th><th>Compte</th><th>Estat</th><th>Missatges</th><th>Ultim</th></tr></thead><tbody>{row_html}</tbody></table></div></section>'''
+        return self._respond(
+            start_response, "200 OK", self._layout("Converses · RRPP", csrf, "conversations", body)
+        )
+
+    def _conversation_legacy(self, start_response, csrf: str, conversation_id: str):
         conn = self._connect()
         try:
             conversation = conn.execute("SELECT c.*,v.name venue_name FROM conversations c LEFT JOIN venues v ON v.id=c.venue_id WHERE c.id=?", (conversation_id,)).fetchone()
@@ -591,6 +801,82 @@ class Application:
         <section class="section"><div class="section-heading"><div><h2>Decisions i revisions</h2></div></div><div class="grid">{reviews_html}</div></section>'''
         return self._respond(start_response, "200 OK", self._layout("Conversa · RRPP", csrf, "conversations", body))
 
+    def _conversation(self, start_response, csrf: str, conversation_id: str):
+        conn = self._connect()
+        try:
+            conversation = conn.execute(
+                "SELECT c.*,ra.external_account_id receiver_account FROM conversations c "
+                "LEFT JOIN receiver_accounts ra ON ra.id=c.receiver_account_id WHERE c.id=?",
+                (conversation_id,),
+            ).fetchone()
+            if not conversation:
+                return self._respond(
+                    start_response, "404 Not Found",
+                    self._page("No trobat", "Conversa desconeguda"),
+                )
+            messages = conn.execute(
+                "SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY created_at,id",
+                (conversation_id,),
+            ).fetchall()
+            reviews = conn.execute(
+                "SELECT r.*,a.type,p.reason FROM action_reviews r "
+                "JOIN actions a ON a.id=r.action_id "
+                "JOIN policy_decisions p ON p.action_id=a.id "
+                "JOIN events e ON e.id=a.event_id WHERE e.conversation_id=? "
+                "ORDER BY r.created_at DESC", (conversation_id,),
+            ).fetchall()
+            jobs = conn.execute(
+                "SELECT j.* FROM jobs j JOIN events e ON e.id=j.event_id "
+                "WHERE e.conversation_id=? ORDER BY j.created_at DESC LIMIT 20",
+                (conversation_id,),
+            ).fetchall()
+            deliveries = conn.execute(
+                "SELECT * FROM deliveries WHERE conversation_id=? ORDER BY created_at DESC LIMIT 20",
+                (conversation_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        messages_html = "".join(
+            f'<article class="message-card {"outbound" if row["direction"] == "outbound" else "inbound"}">'
+            f'<div class="message-meta"><strong>{_escape(row["author_type"])}</strong>'
+            f'{self._badge(row["direction"])}{self._badge(row["status"])}'
+            f'{self._time(row["created_at"])}</div><p>{_escape(row["body_text"])}</p></article>'
+            for row in messages
+        ) or '<p class="empty card">Encara no hi ha missatges.</p>'
+        reviews_html = "".join(
+            f'<article class="card"><div class="card-header"><div>'
+            f'<h3>{_escape(row["type"].replace("_", " "))}</h3>'
+            f'<p>{_escape(row["reason"])}</p></div>{self._badge(row["status"])}</div>'
+            f'{f"<p>{_escape(row["current_text"])}</p>" if row["current_text"] else ""}</article>'
+            for row in reviews
+        ) or '<p class="empty card">Aquesta conversa no te revisions pendents.</p>'
+        jobs_html = "".join(
+            f'<tr><td><a href="/jobs/{_escape(row["id"])}">{self._short_id(row["id"])}</a></td>'
+            f'<td>{self._badge(row["state"])}</td><td>{row["attempts"]}</td>'
+            f'<td>{_escape(row["last_error_code"] or "-")}</td></tr>' for row in jobs
+        ) or '<tr><td colspan="4" class="empty">Cap job.</td></tr>'
+        deliveries_html = "".join(
+            f'<tr><td>{self._short_id(row["id"])}</td><td>{self._badge(row["author_type"])}</td>'
+            f'<td>{self._badge(row["status"])}</td><td>{_escape(row["last_error_code"] or "-")}</td>'
+            f'<td>{self._time(row["sent_at"] or row["created_at"])}</td></tr>'
+            for row in deliveries
+        ) or '<tr><td colspan="5" class="empty">Cap enviament.</td></tr>'
+        lifecycle = "reopen" if conversation["status"] == "resolved" else "resolve"
+        lifecycle_label = "Reobrir conversa" if lifecycle == "reopen" else "Marcar resolta"
+        bot_operation = "resume" if conversation["bot_paused"] else "pause"
+        bot_label = "Retornar al bot" if conversation["bot_paused"] else "Pausar el bot"
+        body = f'''<a class="back-link" href="/conversations">Tornar a converses</a>
+        <section class="hero compact"><p class="eyebrow">{_escape(conversation["receiver_account"])} · {_escape(conversation["external_user_id"])}</p><h1>Conversa</h1><div class="status-row">{self._badge(conversation["channel"])}{self._badge(conversation["status"])}{self._badge("warning" if conversation["bot_paused"] else "success", "Bot pausat" if conversation["bot_paused"] else "Bot actiu")}{self._badge("info", f"{len(messages)} missatges")}</div></section>
+        <section class="grid two"><article class="card"><h2>Resposta humana</h2><p class="mode-help">Utilitza la mateixa cua segura que el bot.</p><form method="post" action="/conversations/{_escape(conversation_id)}/reply" class="review-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Missatge<textarea name="text" maxlength="1000" required></textarea></label><button>Enviar per Instagram</button></form></article>
+        <article class="card"><h2>Control del bot</h2><p class="mode-help">{_escape(conversation["pause_reason"] or "Els missatges nous reobren una conversa resolta.")}</p><form method="post" action="/conversations/{_escape(conversation_id)}/{bot_operation}" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Motiu opcional<input name="reason" maxlength="500"></label><button class="secondary">{bot_label}</button></form><form method="post" action="/conversations/{_escape(conversation_id)}/{lifecycle}"><input type="hidden" name="csrf" value="{_escape(csrf)}"><button class="secondary">{lifecycle_label}</button></form></article></section>
+        <section class="section"><div class="section-heading"><div><h2>Historial complet</h2><p>Client, bot i equip en ordre cronologic.</p></div></div><div class="message-list">{messages_html}</div></section>
+        <section class="section"><div class="section-heading"><div><h2>Decisions i revisions</h2></div></div><div class="grid">{reviews_html}</div></section>
+        <section class="section grid two"><article class="card table-card"><div class="card-header"><h2>Jobs</h2></div><div class="table-scroll"><table><thead><tr><th>ID</th><th>Estat</th><th>Intents</th><th>Error</th></tr></thead><tbody>{jobs_html}</tbody></table></div></article><article class="card table-card"><div class="card-header"><h2>Enviaments</h2></div><div class="table-scroll"><table><thead><tr><th>ID</th><th>Autor</th><th>Estat</th><th>Error</th><th>Data</th></tr></thead><tbody>{deliveries_html}</tbody></table></div></article></section>'''
+        return self._respond(
+            start_response, "200 OK",
+            self._layout("Conversa · RRPP", csrf, "conversations", body),
+        )
+
     def _reviews(self, start_response, csrf: str, query: dict[str, str]):
         status = query.get("status", "pending")
         if status not in {"pending", "prepared", "rejected", "resolved", "all"}:
@@ -598,10 +884,12 @@ class Application:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT r.*,a.type,p.reason,e.conversation_id,c.channel,v.name venue_name FROM action_reviews r "
+                "SELECT r.*,a.type,p.reason,e.conversation_id,c.channel,c.external_user_id,"
+                "ra.external_account_id receiver_account FROM action_reviews r "
                 "JOIN actions a ON a.id=r.action_id JOIN policy_decisions p ON p.action_id=a.id "
                 "JOIN events e ON e.id=a.event_id JOIN conversations c ON c.id=e.conversation_id "
-                "LEFT JOIN venues v ON v.id=c.venue_id WHERE (?='all' OR r.status=?) "
+                "JOIN receiver_accounts ra ON ra.id=c.receiver_account_id "
+                "WHERE (?='all' OR r.status=?) "
                 "ORDER BY r.updated_at DESC,r.id DESC LIMIT 50", (status, status),
             ).fetchall()
         finally:
@@ -610,12 +898,12 @@ class Application:
         for row in rows:
             controls = ""
             if row["status"] == "pending" and row["kind"] == "draft":
-                controls = f'''<form method="post" action="/reviews/{_escape(row["id"])}/edit" class="review-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Esborrany<textarea name="text" maxlength="20000" required>{_escape(row["current_text"])}</textarea></label><button>Desar canvis</button></form><div class="table-actions"><form method="post" action="/reviews/{_escape(row["id"])}/approve"><input type="hidden" name="csrf" value="{_escape(csrf)}"><button>Aprovar com preparat</button></form><form method="post" action="/reviews/{_escape(row["id"])}/reject"><input type="hidden" name="csrf" value="{_escape(csrf)}"><button class="danger">Rebutjar</button></form></div>'''
+                controls = f'''<form method="post" action="/reviews/{_escape(row["id"])}/edit" class="review-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Esborrany<textarea name="text" maxlength="1000" required>{_escape(row["current_text"])}</textarea></label><button>Desar canvis</button></form><div class="table-actions"><form method="post" action="/reviews/{_escape(row["id"])}/send"><input type="hidden" name="csrf" value="{_escape(csrf)}"><button>Enviar per Instagram</button></form><form method="post" action="/reviews/{_escape(row["id"])}/reject"><input type="hidden" name="csrf" value="{_escape(csrf)}"><button class="danger">Rebutjar</button></form></div>'''
             elif row["status"] == "pending":
                 controls = f'<form method="post" action="/reviews/{_escape(row["id"])}/resolve"><input type="hidden" name="csrf" value="{_escape(csrf)}"><button>Marcar escalació resolta</button></form>'
-            cards.append(f'''<article class="card review-card"><div class="card-header"><div><p class="eyebrow">{_escape(row["venue_name"] or "Sense assignar")} · {_escape(row["channel"])}</p><h2>{_escape(row["type"].replace("_", " "))}</h2><p>{_escape(row["reason"])}</p></div>{self._badge(row["status"])}</div><a href="/conversations/{_escape(row["conversation_id"])}">Veure conversa</a>{controls}</article>''')
+            cards.append(f'''<article class="card review-card"><div class="card-header"><div><p class="eyebrow">{_escape(row["receiver_account"])} · {_escape(row["external_user_id"])} · {_escape(row["channel"])}</p><h2>{_escape(row["type"].replace("_", " "))}</h2><p>{_escape(row["reason"])}</p></div>{self._badge(row["status"])}</div><a href="/conversations/{_escape(row["conversation_id"])}">Veure conversa</a>{controls}</article>''')
         tabs = " ".join(f'<a class="button {"" if status == s else "secondary"}" href="/reviews?status={s}">{label}</a>' for s, label in (("pending","Pendents"),("prepared","Preparats"),("rejected","Rebutjats"),("resolved","Resolts"),("all","Tots")))
-        body = f'<section class="hero compact"><p class="eyebrow">Control humà</p><h1>Cua de revisió</h1><p class="hero-copy">Aprovar mai envia: només deixa un esborrany preparat.</p></section><div class="tabs">{tabs}</div><section class="section grid">{"".join(cards) or "<p class=\"empty card\">No hi ha revisions en aquest estat.</p>"}</section>'
+        body = f'<section class="hero compact"><p class="eyebrow">Control humà</p><h1>Cua de revisió</h1><p class="hero-copy">Edita i envia una resposta quan el bot demani intervenció.</p></section><div class="tabs">{tabs}</div><section class="section grid">{"".join(cards) or "<p class=\"empty card\">No hi ha revisions en aquest estat.</p>"}</section>'
         return self._respond(start_response, "200 OK", self._layout("Revisió · RRPP", csrf, "reviews", body))
 
     def _activity(self, start_response, csrf: str, query: dict[str, str]):
@@ -657,28 +945,19 @@ class Application:
         conn = self._connect()
         try:
             venues = conn.execute("SELECT v.*,(SELECT count(*) FROM conversations c WHERE c.venue_id=v.id) conversation_count FROM venues v ORDER BY v.active DESC,v.name").fetchall()
-            routes = conn.execute("SELECT * FROM venue_routes ORDER BY channel,recipient").fetchall()
+            catalog_events = conn.execute(
+                "SELECT ce.*,v.name venue_name FROM catalog_events ce JOIN venues v ON v.id=ce.venue_id "
+                "WHERE ce.active=1 ORDER BY ce.starts_at"
+            ).fetchall()
+            catalog_offers = conn.execute(
+                "SELECT o.*,ce.name event_name FROM catalog_offers o "
+                "JOIN catalog_events ce ON ce.id=o.event_id WHERE o.active=1 "
+                "ORDER BY ce.starts_at,o.price_minor"
+            ).fetchall()
         finally:
             conn.close()
-        route_map = {}
-        for route in routes:
-            route_map.setdefault(route["venue_id"], []).append(route)
-        def render_route(route):
-            control = ""
-            if route["active"]:
-                control = (
-                    f'<form method="post" action="/routes/{_escape(route["id"])}/disable">'
-                    f'<input type="hidden" name="csrf" value="{_escape(csrf)}">'
-                    '<button class="secondary">Desactivar</button></form>'
-                )
-            state = self._badge("success" if route["active"] else "warning",
-                                "Activa" if route["active"] else "Inactiva")
-            return (f'<li><span>{self._badge(route["channel"])} '
-                    f'{_escape(route["recipient"])} {state}</span>{control}</li>')
         cards = []
         for venue in venues:
-            route_list = "".join(render_route(route) for route in route_map.get(venue["id"], []))
-            route_list = route_list or '<li class="field-help">Cap regla configurada</li>'
             cards.append(f'''<article class="card venue-card">
               <div class="card-header"><div><h2>{_escape(venue["name"])}</h2><p>{venue["conversation_count"]} converses · /{_escape(venue["slug"])}</p></div>{self._badge("success" if venue["active"] else "warning", "Activa" if venue["active"] else "Inactiva")}</div>
               <form method="post" action="/venues/{_escape(venue["id"])}/update" class="mode-form">
@@ -688,10 +967,32 @@ class Application:
                 <label>Estat<select name="active"><option value="1"{" selected" if venue["active"] else ""}>Activa</option><option value="0"{" selected" if not venue["active"] else ""}>Inactiva</option></select></label>
                 <button>Desar</button>
               </form>
-              <h3>Regles d’assignació</h3><ul class="route-list">{route_list}</ul>
-              <form method="post" action="/venues/{_escape(venue["id"])}/routes" class="form-grid"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Canal<select name="channel"><option value="gmail">Gmail</option><option value="instagram">Instagram</option><option value="local">Simulador</option></select></label><label>Destinatari o alias<input name="recipient" required maxlength="500"></label><button>Afegir regla</button></form>
             </article>''')
-        body = f'''<section class="hero compact"><p class="eyebrow">Organització</p><h1>Discoteques</h1><p class="hero-copy">Configuració operativa, coneixement verificat i routing exacte per canal i destinatari.</p></section><section class="section grid two"><article class="card"><h2>Nova discoteca</h2><form method="post" action="/venues" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Nom<input name="name" required maxlength="120" placeholder="Sala Nord"></label><label>Identificador intern (opcional)<input name="slug" maxlength="120" placeholder="sala-nord" aria-describedby="venue-slug-help"><span id="venue-slug-help" class="field-help">Es genera automàticament a partir del nom. També pots escriure "Sala Nord" i es convertirà en "sala-nord".</span></label><label>Informació verificada per al bot<textarea name="bot_knowledge" maxlength="20000" rows="8" placeholder="Horaris, ubicació, política d’entrades..."></textarea><span class="field-help">No incloguis secrets ni dades personals. La resposta seguirà l’idioma i el to del client.</span></label><button>Crear discoteca</button></form></article><article class="card"><h2>Com funciona</h2><p class="mode-help">Les regles comparen el destinatari exacte. Si no coincideix, la conversa queda Sense assignar. El contingut del missatge mai decideix la discoteca.</p></article></section><section class="section grid two">{"".join(cards) or "<p class=\"empty card\">Encara no hi ha discoteques.</p>"}</section>'''
+        body = f'''<section class="hero compact"><p class="eyebrow">Catàleg</p><h1>Discoteques</h1><p class="hero-copy">Informació comercial verificada que OpenClaw pot consultar des de qualsevol conversa.</p></section><section class="section grid two"><article class="card"><h2>Nova discoteca</h2><form method="post" action="/venues" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Nom<input name="name" required maxlength="120" placeholder="Sala Nord"></label><label>Identificador intern (opcional)<input name="slug" maxlength="120" placeholder="sala-nord" aria-describedby="venue-slug-help"><span id="venue-slug-help" class="field-help">Es genera automàticament a partir del nom.</span></label><label>Informació verificada per al bot<textarea name="bot_knowledge" maxlength="20000" rows="8" placeholder="Horaris, ubicació, política d’entrades..."></textarea><span class="field-help">No incloguis secrets ni dades personals. La resposta seguirà l’idioma i el to del client.</span></label><button>Crear discoteca</button></form></article><article class="card"><h2>Com funciona</h2><p class="mode-help">Una conversa no pertany a una única discoteca. El bot rep només informació verificada del catàleg i pot comparar diverses opcions.</p></article></section><section class="section grid two">{"".join(cards) or "<p class=\"empty card\">Encara no hi ha discoteques.</p>"}</section>'''
+        venue_options = "".join(
+            f'<option value="{_escape(row["id"])}">{_escape(row["name"])}</option>'
+            for row in venues if row["active"]
+        )
+        event_options = "".join(
+            f'<option value="{_escape(row["id"])}">{_escape(row["venue_name"])} · {_escape(row["name"])}</option>'
+            for row in catalog_events
+        )
+        catalog_rows = "".join(
+            f'<tr><td>{_escape(row["venue_name"])}</td><td>{_escape(row["name"])}</td>'
+            f'<td>{self._time(row["starts_at"])}</td><td>{self._badge(row["status"])}</td></tr>'
+            for row in catalog_events
+        ) or '<tr><td colspan="4" class="empty">Cap esdeveniment verificat.</td></tr>'
+        def format_price(row):
+            if row["price_minor"] is None:
+                return "-"
+            return f'{row["price_minor"] / 100:.2f} {row["currency"]}'
+
+        offer_rows = "".join(
+            f'<tr><td>{_escape(row["event_name"])}</td><td>{_escape(row["name"])}</td>'
+            f'<td>{_escape(format_price(row))}</td>'
+            f'<td>{self._badge(row["availability_status"])}</td></tr>' for row in catalog_offers
+        ) or '<tr><td colspan="4" class="empty">Cap oferta verificada.</td></tr>'
+        body += f'''<section class="section"><div class="section-heading"><div><p class="eyebrow">Coneixement comercial</p><h2>Esdeveniments i ofertes</h2></div></div><div class="grid two"><article class="card"><h3>Nou esdeveniment</h3><form method="post" action="/catalog/events" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Discoteca<select name="venue_id" required>{venue_options}</select></label><label>Nom<input name="name" maxlength="160" required></label><label>Inici ISO amb zona horaria<input name="starts_at" placeholder="2026-07-18T23:00+02:00" required></label><label>Final opcional<input name="ends_at" placeholder="2026-07-19T06:00+02:00"></label><button>Crear esdeveniment verificat</button></form></article><article class="card"><h3>Nova oferta</h3><form method="post" action="/catalog/offers" class="mode-form"><input type="hidden" name="csrf" value="{_escape(csrf)}"><label>Esdeveniment<select name="event_id" required>{event_options}</select></label><label>Nom<input name="name" maxlength="160" required></label><label>Tipus d'entrada<input name="ticket_type" maxlength="120" required></label><label>Preu EUR<input name="price" placeholder="15.00"></label><input type="hidden" name="currency" value="EUR"><label>Promocio<textarea name="promotion_text" maxlength="2000"></textarea></label><label>Condicions<textarea name="conditions" maxlength="4000"></textarea></label><label>Disponibilitat<select name="availability"><option value="available">Disponible</option><option value="unknown">No confirmada</option><option value="sold_out">Exhaurida</option></select></label><label>Enllac HTTPS<input name="link" maxlength="2000"></label><button>Crear oferta verificada</button></form></article></div><article class="card table-card"><h3>Esdeveniments actius</h3><div class="table-scroll"><table><thead><tr><th>Discoteca</th><th>Esdeveniment</th><th>Inici</th><th>Estat</th></tr></thead><tbody>{catalog_rows}</tbody></table></div><h3>Ofertes actives</h3><div class="table-scroll"><table><thead><tr><th>Esdeveniment</th><th>Oferta</th><th>Preu</th><th>Disponibilitat</th></tr></thead><tbody>{offer_rows}</tbody></table></div></article></section>'''
         return self._respond(start_response, "200 OK", self._layout("Discoteques · RRPP", csrf, "venues", body))
 
     def _system(self, start_response, csrf: str):
@@ -705,11 +1006,11 @@ class Application:
         finally:
             conn.close()
         service_map = {row["service"]: row for row in services}
-        labels = {"worker": "Worker", "gmail": "Gmail", "maintenance": "Manteniment"}
+        labels = {"worker": "Worker", "maintenance": "Manteniment"}
         service_cards = []
-        for name in ("worker", "gmail", "maintenance"):
+        for name in ("worker", "maintenance"):
             row = service_map.get(name)
-            state = service_health(row, gmail_poll_seconds=self.settings.gmail_poll_seconds)
+            state = service_health(row)
             service_cards.append(f'''<article class="card service-card"><div class="card-header"><div><h2>{labels[name]}</h2><p>{_escape(row["instance_id"] if row else "Encara no iniciat")}</p></div>{self._badge(state)}</div><dl class="compact-record"><dt>Heartbeat</dt><dd>{self._time(row["heartbeat_at"] if row else None)}</dd><dt>Últim èxit</dt><dd>{self._time(row["last_success_at"] if row else None)}</dd><dt>Últim error</dt><dd>{_escape(row["last_error_code"] if row else "—")}</dd></dl></article>''')
         backup_rows = "".join(
             f'<tr><td>{_escape(row["kind"])}</td><td>{_escape(row["filename"])}</td><td>{row["size_bytes"]}</td>'

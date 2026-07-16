@@ -55,23 +55,6 @@ services:
       retries: 3
       start_period: 15s
 
-  gmail:
-    <<: *rrpp-service
-    profiles: ["gmail"]
-    command: ["rrpp-bridge", "gmail-poll"]
-    volumes:
-      - ./var:/app/var
-      - ./backups:/app/backups
-      - ./backup-export:/app/backup-export
-      - ./secrets/gmail-oauth-client.json:/app/config-secrets/gmail-oauth-client.json:ro
-      - ./runtime-secrets:/app/runtime-secrets
-    healthcheck:
-      test: ["CMD", "rrpp-bridge", "healthcheck", "gmail"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-
   instagram:
     <<: *rrpp-service
     profiles: ["instagram"]

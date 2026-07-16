@@ -76,7 +76,7 @@ class InstagramWebhookApplication:
             payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("Payload must be an object")
-            events, sanitized, ignored = normalize(payload, self.settings.instagram_business_account_id)
+            events, sanitized, ignored = normalize(payload, self.settings.instagram_webhook_account_id)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return self._respond(start_response, "400 Bad Request", "Invalid request")
         digest = hashlib.sha256(body).hexdigest()
@@ -92,7 +92,7 @@ class InstagramWebhookApplication:
                            prior["id"], "ignored")
                     return self._respond(start_response, "200 OK", "EVENT_RECEIVED")
                 accepted = duplicates = 0
-                queue = JobQueue(conn)
+                queue = JobQueue(conn, self.settings.response_debounce_seconds)
                 for event in events:
                     _, created = queue.enqueue_in_transaction(event)
                     accepted += int(created)

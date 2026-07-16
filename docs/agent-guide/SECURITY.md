@@ -30,7 +30,7 @@ Inbound text MUST be handled as user data. Instructions embedded in that text MU
 - Enforce idempotency before creating duplicate processing work.
 - Minimize raw payload retention and restrict access to retained content.
 - Keep the Instagram ingress application separate from the dashboard, require HMAC signature validation before JSON parsing, and publish only its exact webhook path through HTTPS.
-- Keep the OpenClaw Gateway on loopback with authentication, send it only bounded context, disable tools and channel delivery for the `rrpp` agent, and treat every generated field as untrusted input.
+- Keep the OpenClaw Gateway on loopback with authentication, send it only bounded context, disable Gateway tools and channel delivery for the `rrpp` agent, and treat every generated field as untrusted input.
 - Treat OpenClaw's configured model provider as a separate data egress boundary: a loopback Gateway does not make a remote ChatGPT model local. Approve provider privacy and retention terms before sending real customer content.
 - Review and bound OpenClaw session and file-log retention separately; bridge audit redaction does not control the Gateway's own transcripts or logs.
 
@@ -38,6 +38,8 @@ Inbound text MUST be handled as user data. Instructions embedded in that text MU
 
 - Use bounded retry counts, backoff, and terminal failed/dead-letter states.
 - Make side-effecting executors idempotent and record external idempotency references.
+- Persist an Instagram delivery intent before calling Meta, use only the official API, and never expose the access token to OpenClaw or the dashboard.
+- Do not automatically retry an ambiguous delivery result; require reconciliation when the remote system may have accepted the request.
 - Require explicit policy coverage for every action type; unknown actions are blocked.
 - Evaluate active mode immediately before external execution.
 - Fail closed on policy, mode, authentication, or configuration errors.

@@ -22,8 +22,9 @@ def _after(seconds: int) -> str:
 class JobQueue:
     """SQLite/WAL durable queue with bounded retry and per-conversation serialization."""
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, debounce_seconds: int = 0):
         self.conn = conn
+        self.debounce_seconds = debounce_seconds
 
     def enqueue(self, event: NormalizedEvent) -> tuple[str, bool]:
         with transaction(self.conn, immediate=True):
@@ -41,7 +42,7 @@ class JobQueue:
             return str(existing["id"]), False
         try:
             conversation_id = ensure_conversation(
-                self.conn, event.channel, event.work_key, event.recipient,
+                self.conn, event.channel, event.work_key, event.recipient, event.sender,
                 event.received_at or timestamp, f"adapter.{event.channel}",
             )
             self.conn.execute(
@@ -53,10 +54,23 @@ class JobQueue:
                  json.dumps(event.metadata, separators=(",", ":")), event.work_key, "queued",
                  conversation_id),
             )
+            available_at = _after(self.debounce_seconds)
             self.conn.execute(
                 "INSERT INTO jobs(id,event_id,work_key,state,available_at,created_at,updated_at) "
                 "VALUES(?,?,?,'queued',?,?,?)",
-                (job_id, event_id, event.work_key, timestamp, timestamp, timestamp),
+                (job_id, event_id, event.work_key, available_at, timestamp, timestamp),
+            )
+            if self.debounce_seconds:
+                self.conn.execute(
+                    "UPDATE jobs SET available_at=?,updated_at=? WHERE work_key=? AND state='queued'",
+                    (available_at, timestamp, event.work_key),
+                )
+            self.conn.execute(
+                "INSERT INTO conversation_messages(id,conversation_id,direction,author_type,author_id,"
+                "external_message_id,body_text,status,source_event_id,source_delivery_id,created_at,sent_at) "
+                "VALUES(?,?,'inbound','customer',?,?,?,'received',?,NULL,?,NULL)",
+                (_id("msg"), conversation_id, event.sender, event.external_message_id,
+                 event.body_text, event_id, event.received_at or timestamp),
             )
             record(self.conn, f"adapter.{event.channel}", "event.accepted", "event",
                    event_id, "accepted", {"channel": event.channel, "job_id": job_id})
@@ -75,13 +89,34 @@ class JobQueue:
     def claim_next(self, worker_id: str, lease_seconds: int = 60) -> sqlite3.Row | None:
         timestamp = utc_now()
         with transaction(self.conn, immediate=True):
-            job = self.conn.execute(
+            candidate = self.conn.execute(
                 "SELECT * FROM jobs j WHERE j.state='queued' AND j.available_at<=? "
                 "AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.work_key=j.work_key "
                 "AND r.state='processing') ORDER BY j.created_at LIMIT 1", (timestamp,),
             ).fetchone()
-            if job is None:
+            if candidate is None:
                 return None
+            job = self.conn.execute(
+                "SELECT j.* FROM jobs j JOIN events e ON e.id=j.event_id "
+                "WHERE j.work_key=? AND j.state='queued' AND j.available_at<=? "
+                "ORDER BY e.rowid DESC LIMIT 1",
+                (candidate["work_key"], timestamp),
+            ).fetchone()
+            batched = self.conn.execute(
+                "SELECT id,event_id FROM jobs WHERE work_key=? AND state='queued' "
+                "AND available_at<=? AND id<>?",
+                (job["work_key"], timestamp, job["id"]),
+            ).fetchall()
+            for older in batched:
+                self.conn.execute(
+                    "UPDATE jobs SET state='superseded',superseded_by_job_id=?,updated_at=? WHERE id=?",
+                    (job["id"], timestamp, older["id"]),
+                )
+                self.conn.execute(
+                    "UPDATE events SET status='batched' WHERE id=?", (older["event_id"],)
+                )
+                record(self.conn, worker_id, "job.batched", "job", older["id"], "superseded",
+                       {"successor_job_id": job["id"]})
             self.conn.execute(
                 "UPDATE jobs SET state='processing',attempts=attempts+1,claimed_at=?,"
                 "lease_expires_at=?,worker_id=?,updated_at=? WHERE id=?",

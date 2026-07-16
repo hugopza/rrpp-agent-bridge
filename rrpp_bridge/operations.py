@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from .audit import record, utc_now
 from .db import connect, current_version, latest_version, transaction
 
-SERVICES = frozenset({"worker", "gmail", "maintenance"})
+SERVICES = frozenset({"worker", "maintenance"})
 BACKUP_KINDS = frozenset({"manual", "daily", "monthly", "pre_restore"})
 
 
@@ -76,17 +76,14 @@ def stop_service(conn: sqlite3.Connection, service: str, instance: str) -> None:
             record(conn, f"service.{service}", "service.stopped", "service", service, "stopped")
 
 
-def service_health(row: sqlite3.Row | None, *, now: datetime | None = None,
-                   gmail_poll_seconds: int = 60) -> str:
+def service_health(row: sqlite3.Row | None, *, now: datetime | None = None) -> str:
     if row is None:
         return "missing"
     if row["stopped_at"]:
         return "stopped"
     now = now or datetime.now(timezone.utc)
     heartbeat_at = datetime.fromisoformat(str(row["heartbeat_at"]))
-    threshold = max(180, 3 * gmail_poll_seconds) if row["service"] == "gmail" else (
-        90 if row["service"] == "maintenance" else 30
-    )
+    threshold = 90 if row["service"] == "maintenance" else 30
     if now - heartbeat_at > timedelta(seconds=threshold):
         return "stale"
     if row["last_error_at"] and (not row["last_success_at"]

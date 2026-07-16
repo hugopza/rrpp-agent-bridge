@@ -48,7 +48,8 @@ class InstagramWebhookTests(unittest.TestCase):
         self.settings = Settings(
             database_path=self.path, mode="shadow", dashboard_user="", dashboard_password="",
             session_secret="", instagram_enabled=True, instagram_verify_token="verify-me",
-            instagram_app_secret="app-secret", instagram_business_account_id="ig-business-1",
+            instagram_app_secret="app-secret", instagram_business_account_id="ig-send-account-1",
+            instagram_webhook_account_id="ig-business-1",
         )
         self.app = InstagramWebhookApplication(self.settings)
 
@@ -102,10 +103,21 @@ class InstagramWebhookTests(unittest.TestCase):
         with patch.dict("os.environ", {"RRPP_INSTAGRAM_ENABLED": "true",
                                        "INSTAGRAM_VERIFY_TOKEN": "",
                                        "INSTAGRAM_APP_SECRET": "",
-                                       "INSTAGRAM_BUSINESS_ACCOUNT_ID": ""}, clear=False), \
+                                       "INSTAGRAM_BUSINESS_ACCOUNT_ID": "",
+                                       "INSTAGRAM_WEBHOOK_ACCOUNT_ID": ""}, clear=False), \
                 patch("rrpp_bridge.config.load_local_env"):
             with self.assertRaisesRegex(ValueError, "requires verify token"):
                 Settings.from_env(require_auth=False)
+
+    def test_webhook_receiver_id_is_independent_from_send_account_id(self):
+        self.assertNotEqual(
+            self.settings.instagram_webhook_account_id,
+            self.settings.instagram_business_account_id,
+        )
+        self.assertEqual("200 OK", self.signed_request(payload())[0])
+        conn = connect(self.path)
+        self.assertEqual(1, conn.execute("SELECT count(*) FROM events").fetchone()[0])
+        conn.close()
 
     def test_post_requires_valid_signature(self):
         body = json.dumps(payload()).encode()
@@ -181,7 +193,7 @@ class InstagramWebhookTests(unittest.TestCase):
         ).fetchone()[0])
         conn.close()
 
-    def test_exact_account_routing_and_worker_create_review_without_outbound(self):
+    def test_account_centered_conversation_and_legacy_provider_never_send(self):
         class DraftProvider:
             provider_id = "fake-openclaw"
 
@@ -210,8 +222,8 @@ class InstagramWebhookTests(unittest.TestCase):
             "SELECT r.kind,r.status,a.type FROM action_reviews r JOIN actions a ON a.id=r.action_id"
         ).fetchone()
         execution = conn.execute("SELECT status,simulated FROM action_executions").fetchone()
-        self.assertEqual((venue_id, "pending_review"), tuple(conversation))
-        self.assertEqual(("draft", "pending", "draft_reply"), tuple(review))
+        self.assertEqual((None, "pending_review"), tuple(conversation))
+        self.assertEqual(("draft", "pending", "escalate_to_owner"), tuple(review))
         self.assertEqual(("suppressed", 1), tuple(execution))
         conn.close()
 

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 VALID_MODES = frozenset({"shadow", "dry-run", "canary", "live"})
 ENV_KEY = re.compile(
     r"^(?:RRPP_[A-Z0-9_]+|"
-    r"INSTAGRAM_(?:VERIFY_TOKEN|APP_SECRET|PAGE_ACCESS_TOKEN|BUSINESS_ACCOUNT_ID)|"
+    r"INSTAGRAM_(?:VERIFY_TOKEN|APP_SECRET|PAGE_ACCESS_TOKEN|BUSINESS_ACCOUNT_ID|WEBHOOK_ACCOUNT_ID)|"
     r"OPENCLAW_(?:ENABLED|BASE_URL|AGENT_ID|AGENT_NAME|TIMEOUT_SECONDS|GATEWAY_TOKEN))$"
 )
 
@@ -44,10 +44,6 @@ class Settings:
     max_attempts: int = 3
     lease_seconds: int = 60
     canary_senders: frozenset[str] = frozenset()
-    gmail_client_path: Path = Path("secrets/gmail-oauth-client.json")
-    gmail_token_path: Path = Path("secrets/gmail-token.json")
-    gmail_poll_seconds: int = 60
-    gmail_batch_size: int = 50
     backup_dir: Path = Path("backups")
     backup_export_dir: Path = Path("backup-export")
     backup_age_recipient: str = ""
@@ -58,7 +54,13 @@ class Settings:
     instagram_app_secret: str = ""
     instagram_page_access_token: str = ""
     instagram_business_account_id: str = ""
+    instagram_webhook_account_id: str = ""
     instagram_port: int = 8081
+    instagram_send_enabled: bool = False
+    instagram_graph_base_url: str = "https://graph.instagram.com"
+    instagram_graph_api_version: str = "v24.0"
+    instagram_send_timeout_seconds: float = 15.0
+    response_debounce_seconds: int = 0
     openclaw_enabled: bool = False
     openclaw_base_url: str = "http://127.0.0.1:18789"
     openclaw_agent_id: str = "rrpp"
@@ -83,18 +85,19 @@ class Settings:
             port = int(os.getenv("RRPP_PORT", "8080"))
             max_attempts = int(os.getenv("RRPP_MAX_ATTEMPTS", "3"))
             lease_seconds = int(os.getenv("RRPP_LEASE_SECONDS", "60"))
-            gmail_poll_seconds = int(os.getenv("RRPP_GMAIL_POLL_SECONDS", "60"))
-            gmail_batch_size = int(os.getenv("RRPP_GMAIL_BATCH_SIZE", "50"))
             backup_hour = int(os.getenv("RRPP_BACKUP_HOUR", "3"))
             instagram_port = int(os.getenv("RRPP_INSTAGRAM_PORT", "8081"))
+            response_debounce_seconds = int(os.getenv("RRPP_RESPONSE_DEBOUNCE_SECONDS", "3"))
+            instagram_send_timeout_seconds = float(os.getenv("RRPP_INSTAGRAM_SEND_TIMEOUT_SECONDS", "15"))
             openclaw_timeout_seconds = float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "60"))
         except ValueError as exc:
             raise ValueError("Ports, retry values, leases, and timeouts must be numeric") from exc
         if (not 1 <= port <= 65535 or max_attempts < 1 or lease_seconds < 5
-                or gmail_poll_seconds < 15 or not 1 <= gmail_batch_size <= 500
                 or not 0 <= backup_hour <= 23 or not 1 <= instagram_port <= 65535
+                or not 0 <= response_debounce_seconds <= 30
+                or not 1 <= instagram_send_timeout_seconds <= 60
                 or not 1 <= openclaw_timeout_seconds <= 120):
-            raise ValueError("Invalid port, retry, lease, or Gmail polling configuration")
+            raise ValueError("Invalid port, retry, lease, or timeout configuration")
         instagram_enabled_value = os.getenv("RRPP_INSTAGRAM_ENABLED", "false").strip().casefold()
         if instagram_enabled_value not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
             raise ValueError("RRPP_INSTAGRAM_ENABLED must be a boolean value")
@@ -102,9 +105,38 @@ class Settings:
         instagram_verify_token = os.getenv("INSTAGRAM_VERIFY_TOKEN", "").strip()
         instagram_app_secret = os.getenv("INSTAGRAM_APP_SECRET", "").strip()
         instagram_business_account_id = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "").strip()
+        instagram_webhook_account_id = os.getenv(
+            "INSTAGRAM_WEBHOOK_ACCOUNT_ID", instagram_business_account_id
+        ).strip()
+        instagram_page_access_token = os.getenv("INSTAGRAM_PAGE_ACCESS_TOKEN", "").strip()
         if instagram_enabled and not all((instagram_verify_token, instagram_app_secret,
-                                          instagram_business_account_id)):
-            raise ValueError("Enabled Instagram webhook requires verify token, app secret, and business account ID")
+                                          instagram_webhook_account_id)):
+            raise ValueError(
+                "Enabled Instagram webhook requires verify token, app secret, and webhook account ID"
+            )
+        instagram_send_value = os.getenv("RRPP_INSTAGRAM_SEND_ENABLED", "false").strip().casefold()
+        if instagram_send_value not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
+            raise ValueError("RRPP_INSTAGRAM_SEND_ENABLED must be a boolean value")
+        instagram_send_enabled = instagram_send_value in {"1", "true", "yes", "on"}
+        if instagram_send_enabled and (not instagram_enabled or not instagram_page_access_token
+                                       or not instagram_business_account_id):
+            raise ValueError(
+                "Instagram sending requires the enabled webhook, business account ID, and access token"
+            )
+        instagram_graph_base_url = os.getenv(
+            "RRPP_INSTAGRAM_GRAPH_BASE_URL", "https://graph.instagram.com"
+        ).strip().rstrip("/")
+        parsed_graph_url = urlparse(instagram_graph_base_url)
+        if (parsed_graph_url.scheme != "https" or parsed_graph_url.hostname != "graph.instagram.com"
+                or parsed_graph_url.username or parsed_graph_url.password or parsed_graph_url.port
+                or parsed_graph_url.path not in {"", "/"} or parsed_graph_url.query
+                or parsed_graph_url.fragment):
+            raise ValueError("RRPP_INSTAGRAM_GRAPH_BASE_URL must be https://graph.instagram.com")
+        instagram_graph_api_version = os.getenv(
+            "RRPP_INSTAGRAM_GRAPH_API_VERSION", "v24.0"
+        ).strip()
+        if not re.fullmatch(r"v[1-9][0-9]?\.0", instagram_graph_api_version):
+            raise ValueError("RRPP_INSTAGRAM_GRAPH_API_VERSION must look like v24.0")
         openclaw_enabled_value = os.getenv("OPENCLAW_ENABLED", "false").strip().casefold()
         if openclaw_enabled_value not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
             raise ValueError("OPENCLAW_ENABLED must be a boolean value")
@@ -149,10 +181,6 @@ class Settings:
             max_attempts=max_attempts,
             lease_seconds=lease_seconds,
             canary_senders=canary_senders,
-            gmail_client_path=Path(os.getenv("RRPP_GMAIL_CLIENT_PATH", "secrets/gmail-oauth-client.json")),
-            gmail_token_path=Path(os.getenv("RRPP_GMAIL_TOKEN_PATH", "secrets/gmail-token.json")),
-            gmail_poll_seconds=gmail_poll_seconds,
-            gmail_batch_size=gmail_batch_size,
             backup_dir=Path(os.getenv("RRPP_BACKUP_DIR", "backups")),
             backup_export_dir=Path(os.getenv("RRPP_BACKUP_EXPORT_DIR", "backup-export")),
             backup_age_recipient=os.getenv("RRPP_BACKUP_AGE_RECIPIENT", "").strip(),
@@ -161,9 +189,15 @@ class Settings:
             instagram_enabled=instagram_enabled,
             instagram_verify_token=instagram_verify_token,
             instagram_app_secret=instagram_app_secret,
-            instagram_page_access_token=os.getenv("INSTAGRAM_PAGE_ACCESS_TOKEN", "").strip(),
+            instagram_page_access_token=instagram_page_access_token,
             instagram_business_account_id=instagram_business_account_id,
+            instagram_webhook_account_id=instagram_webhook_account_id,
             instagram_port=instagram_port,
+            instagram_send_enabled=instagram_send_enabled,
+            instagram_graph_base_url=instagram_graph_base_url,
+            instagram_graph_api_version=instagram_graph_api_version,
+            instagram_send_timeout_seconds=instagram_send_timeout_seconds,
+            response_debounce_seconds=response_debounce_seconds,
             openclaw_enabled=openclaw_enabled,
             openclaw_base_url=openclaw_base_url,
             openclaw_agent_id=openclaw_agent_id,

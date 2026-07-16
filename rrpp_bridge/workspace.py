@@ -31,32 +31,51 @@ def route_venue(conn: sqlite3.Connection, channel: str, recipient: str) -> str |
     return str(row["venue_id"]) if row else None
 
 
+def _receiver_account(conn: sqlite3.Connection, channel: str, recipient: str,
+                      timestamp: str) -> str:
+    row = conn.execute(
+        "SELECT id FROM receiver_accounts WHERE channel=? AND external_account_id=? COLLATE NOCASE",
+        (channel, recipient.strip()),
+    ).fetchone()
+    if row:
+        return str(row["id"])
+    account_id = _id("acct")
+    conn.execute(
+        "INSERT INTO receiver_accounts VALUES(?,?,?,?,1,?,?)",
+        (account_id, channel, recipient.strip(), recipient.strip(), timestamp, timestamp),
+    )
+    return account_id
+
+
 def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: str,
-                        recipient: str, message_at: str, actor: str) -> str:
+                        recipient: str, sender: str, message_at: str, actor: str) -> str:
     row = conn.execute(
         "SELECT * FROM conversations WHERE channel=? AND external_key=?",
         (channel, external_key),
     ).fetchone()
     timestamp = utc_now()
-    routed_venue = route_venue(conn, channel, recipient)
+    account_id = _receiver_account(conn, channel, recipient, timestamp)
     if row:
-        venue_id = row["venue_id"] or routed_venue
-        status = "open" if row["status"] == "resolved" else row["status"]
+        status = ("pending_review" if row["bot_paused"] else "open") \
+            if row["status"] == "resolved" else row["status"]
         conn.execute(
-            "UPDATE conversations SET venue_id=?,status=?,last_message_at=?,updated_at=? WHERE id=?",
-            (venue_id, status, max(str(row["last_message_at"]), message_at), timestamp, row["id"]),
+            "UPDATE conversations SET receiver_account_id=?,external_user_id=?,status=?,"
+            "last_message_at=?,updated_at=? WHERE id=?",
+            (account_id, sender, status, max(str(row["last_message_at"]), message_at),
+             timestamp, row["id"]),
         )
         if row["status"] == "resolved":
             record(conn, actor, "conversation.reopened", "conversation", row["id"], "open")
         return str(row["id"])
     conversation_id = _id("conv")
     conn.execute(
-        "INSERT INTO conversations(id,channel,external_key,venue_id,status,last_message_at,created_at,updated_at) "
-        "VALUES(?,?,?,?,'open',?,?,?)",
-        (conversation_id, channel, external_key, routed_venue, message_at, timestamp, timestamp),
+        "INSERT INTO conversations(id,channel,external_key,venue_id,status,last_message_at,created_at,"
+        "updated_at,receiver_account_id,external_user_id) VALUES(?,?,?,NULL,'open',?,?,?,?,?)",
+        (conversation_id, channel, external_key, message_at, timestamp, timestamp,
+         account_id, sender),
     )
     record(conn, actor, "conversation.created", "conversation", conversation_id, "open",
-           {"channel": channel, "venue_id": routed_venue})
+           {"channel": channel, "receiver_account_id": account_id})
     return conversation_id
 
 
@@ -122,7 +141,7 @@ def update_venue(conn: sqlite3.Connection, venue_id: str, name: str, language: s
 def add_route(conn: sqlite3.Connection, venue_id: str, channel: str, recipient: str,
               actor: str) -> str:
     channel, recipient = channel.strip().casefold(), recipient.strip()
-    if channel not in {"gmail", "instagram", "local"} or not recipient or len(recipient) > 500:
+    if channel not in {"instagram", "local"} or not recipient or len(recipient) > 500:
         raise ValueError("Invalid route channel or recipient")
     route_id, timestamp = _id("route"), utc_now()
     with transaction(conn, immediate=True):
@@ -186,6 +205,23 @@ def set_conversation_status(conn: sqlite3.Connection, conversation_id: str,
         ).rowcount
         if changed:
             record(conn, actor, f"conversation.{status}", "conversation", conversation_id, status)
+    return bool(changed)
+
+
+def set_bot_paused(conn: sqlite3.Connection, conversation_id: str, paused: bool,
+                   actor: str, reason: str = "") -> bool:
+    reason = reason.strip()[:500] if paused else ""
+    timestamp = utc_now()
+    with transaction(conn, immediate=True):
+        changed = conn.execute(
+            "UPDATE conversations SET bot_paused=?,pause_reason=?,assigned_operator=?,"
+            "status=?,updated_at=? WHERE id=?",
+            (int(paused), reason, actor if paused else None,
+             "pending_review" if paused else "open", timestamp, conversation_id),
+        ).rowcount
+        if changed:
+            record(conn, actor, "conversation.bot_paused" if paused else "conversation.bot_resumed",
+                   "conversation", conversation_id, "paused" if paused else "open")
     return bool(changed)
 
 

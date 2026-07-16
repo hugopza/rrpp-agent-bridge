@@ -9,14 +9,15 @@ from pathlib import Path
 from urllib.request import urlopen
 from wsgiref.simple_server import make_server
 
-from .agent_provider import build_agent_provider
-from .config import Settings
+from .agent_provider import AgentContext, AgentProviderError, build_agent_provider
+from .config import Settings, VALID_MODES
 from .db import backup_database, connect, current_version, initialize, latest_version, prepare_runtime
 from .queue import JobQueue
+from .instagram_sender import build_instagram_sender
 from .operations import (create_backup, instance_id, restore_backup, run_maintenance,
-                         service_health, start_service, stop_service, verify_backup,
+                         SERVICES, service_health, start_service, stop_service, verify_backup,
                          heartbeat)
-from .runtime import get_mode, initialize_mode
+from .runtime import get_mode, initialize_mode, set_mode
 from .service import process_one
 from .web import Application
 
@@ -47,10 +48,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="rrpp-bridge")
     sub = parser.add_subparsers(dest="command", required=True)
     for command in ("init-db", "migrate", "status", "recover-stale", "web",
-                    "instagram-webhook", "gmail-auth"):
+                    "instagram-webhook", "agent-check"):
         sub.add_parser(command)
-    gmail_poll = sub.add_parser("gmail-poll")
-    gmail_poll.add_argument("--once", action="store_true")
+    mode_command = sub.add_parser("set-mode")
+    mode_command.add_argument("mode", choices=sorted(VALID_MODES))
     worker = sub.add_parser("worker")
     worker.add_argument("--once", action="store_true")
     maintenance = sub.add_parser("maintenance")
@@ -66,14 +67,28 @@ def main() -> None:
     restore.add_argument("--confirm", required=True)
     restore.add_argument("--identity")
     healthcheck = sub.add_parser("healthcheck")
-    healthcheck.add_argument("service", choices=("web", "worker", "gmail", "maintenance"))
+    healthcheck.add_argument("service", choices=("web", "worker", "maintenance"))
     args = parser.parse_args()
     settings = Settings.from_env(require_auth=args.command == "web")
 
-    if args.command == "gmail-auth":
-        from .gmail_connector import authorize
-        authorize(settings.gmail_client_path, settings.gmail_token_path)
-        print(f"Gmail read-only authorization stored at {settings.gmail_token_path}")
+    if args.command == "agent-check":
+        provider = build_agent_provider(settings)
+        try:
+            decision = provider.generate_decision(AgentContext(
+                correlation_id="agent-check", conversation_id="agent-check-v2",
+                channel="local", receiver_account_id="local-check",
+                external_user_id="local-check", language_hint="ca",
+                incoming_message="Hola", history=(), catalog_items=(), bot_paused=False,
+            ))
+        except AgentProviderError as exc:
+            print(json.dumps({"provider": provider.provider_id, "error": exc.code,
+                              "diagnostic": exc.diagnostic}, sort_keys=True))
+            raise SystemExit(1) from None
+        print(json.dumps({
+            "provider": provider.provider_id, "action": decision.action,
+            "language": decision.language, "reason_code": decision.reason_code,
+            "structured": decision.structured, "text_length": len(decision.text),
+        }, sort_keys=True))
         return
 
     if args.command == "backup":
@@ -118,7 +133,7 @@ def main() -> None:
             state = "healthy" if healthy else "unreachable"
         else:
             row = conn.execute("SELECT * FROM service_status WHERE service=?", (args.service,)).fetchone()
-            state = service_health(row, gmail_poll_seconds=settings.gmail_poll_seconds)
+            state = service_health(row)
             healthy = state == "healthy"
         print(json.dumps({"service": args.service, "status": state}))
         conn.close()
@@ -130,10 +145,17 @@ def main() -> None:
         counts = {row["state"]: row["count"] for row in conn.execute(
             "SELECT state,count(*) count FROM jobs GROUP BY state"
         )}
-        services = {row["service"]: service_health(row, gmail_poll_seconds=settings.gmail_poll_seconds)
-                    for row in conn.execute("SELECT * FROM service_status")}
+        active_rows = [row for row in conn.execute("SELECT * FROM service_status")
+                       if row["service"] in SERVICES]
+        services = {row["service"]: service_health(row) for row in active_rows}
+        instances = {row["service"]: row["instance_id"] for row in active_rows}
         print(json.dumps({"database": str(settings.database_path), "schema": current_version(conn),
-                          "mode": get_mode(conn), "jobs": counts, "services": services}, sort_keys=True))
+                          "mode": get_mode(conn), "jobs": counts, "services": services,
+                          "instances": instances}, sort_keys=True))
+        return
+    if args.command == "set-mode":
+        set_mode(conn, args.mode, "cli")
+        print(json.dumps({"mode": get_mode(conn)}))
         return
     if args.command == "recover-stale":
         recovered = JobQueue(conn).recover_stale(settings.max_attempts, "cli.recover-stale")
@@ -162,35 +184,18 @@ def main() -> None:
         except GracefulShutdown:
             pass
         return
-    if args.command == "gmail-poll":
-        from .gmail_connector import build_service, run_poll_loop
-        instance = instance_id("gmail")
-        start_service(conn, "gmail", instance)
-        _install_shutdown_handlers()
-        try:
-            service = build_service(settings.gmail_token_path)
-            run_poll_loop(conn, service, settings.gmail_batch_size,
-                          settings.gmail_poll_seconds, args.once, instance)
-        except GracefulShutdown:
-            pass
-        except Exception as exc:
-            heartbeat(conn, "gmail", instance, error=exc)
-            raise
-        finally:
-            stop_service(conn, "gmail", instance)
-            conn.close()
-        return
     worker_id = f"worker.{socket.gethostname()}"
     instance = instance_id("worker")
     start_service(conn, "worker", instance)
     _install_shutdown_handlers()
     last_heartbeat = 0.0
     agent_provider = build_agent_provider(settings)
+    instagram_sender = build_instagram_sender(settings)
     try:
         while True:
             processed = process_one(conn, worker_id, settings.max_attempts,
                                     settings.lease_seconds, settings.canary_senders,
-                                    agent_provider)
+                                    agent_provider, instagram_sender)
             now = time.monotonic()
             if processed or now - last_heartbeat >= 10:
                 heartbeat(conn, "worker", instance, success=processed,

@@ -11,13 +11,14 @@ from .executor import Executor
 from .queue import JobQueue
 
 
-def ingest_local(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[str, bool]:
-    return JobQueue(conn).enqueue(normalize(payload))
+def ingest_local(conn: sqlite3.Connection, payload: dict[str, Any],
+                 debounce_seconds: int = 0) -> tuple[str, bool]:
+    return JobQueue(conn, debounce_seconds).enqueue(normalize(payload))
 
 
 def process_one(conn: sqlite3.Connection, worker_id: str = "worker.local",
                 max_attempts: int = 3, lease_seconds: int = 60,
                 canary_senders: frozenset[str] = frozenset(),
-                agent_provider: AgentProvider | None = None) -> bool:
+                agent_provider: AgentProvider | None = None, instagram_sender=None) -> bool:
     return Executor(conn, max_attempts, lease_seconds, canary_senders,
-                    agent_provider).run_once(worker_id)
+                    agent_provider, instagram_sender).run_once(worker_id)

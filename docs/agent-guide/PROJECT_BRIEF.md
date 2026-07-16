@@ -85,18 +85,18 @@ The design SHOULD allow later adapters for email, Instagram DM, WhatsApp Busines
 ## Confirmed Operational Workspace
 
 - Group events into channel-native conversations; never infer cross-channel identity.
-- Separate work by configurable nightlife venue while retaining a global owner view.
-- Route by configured channel/recipient identity, never by untrusted message content.
-- Keep unmatched conversations visibly unassigned for manual review.
-- Generate deterministic Catalan or Spanish drafts and require human review.
-- Editing, approval, rejection, assignment, and resolution MUST be authenticated, CSRF-protected, and audited.
-- Approval marks a draft prepared and MUST NOT send externally.
+- Identify each conversation by channel, receiving account, and external customer; do not bind it to one venue.
+- Keep venues, events, offers, links, conditions, availability, and verification metadata in a bridge-owned catalog consultable from any conversation.
+- Let OpenClaw propose a structured `reply`, `ask_clarification`, `human_required`, or `ignore` decision from bounded untrusted context.
+- Editing, human reply, pause, resume, resolution, and delivery controls MUST be authenticated, CSRF-protected, and audited.
+- Permit automatic Instagram replies only when policy explicitly allows them and `canary` or `live` mode permits execution.
+- Keep OpenClaw free of Instagram credentials and direct channel delivery; the bridge owns every external side effect.
 - Keep the audit history in the local phase; bound and paginate dashboard views instead of rendering unbounded lists.
-- Use the local OpenClaw `rrpp` agent only to generate response proposals from bounded conversation context and owner-configured venue knowledge. All proposals require human review and OpenClaw has no channel delivery capability.
+- Use the local OpenClaw `rrpp` agent for bounded response decisions and wording. Invalid, sensitive, stale, or unsupported results require human review.
 
 ## Confirmed Operational Deployment
 
-- Run web, worker, Gmail polling, and maintenance independently on one host.
+- Run web, Instagram ingress, worker, OpenClaw Gateway, and maintenance independently on one host.
 - Keep the VPS dashboard bound to loopback and access it through an SSH tunnel.
 - Persist sanitized service health without exception text, credentials, or message content.
 - Create verified SQLite-native backups daily, retain seven daily and three monthly copies, and prepare public-key-encrypted exports for off-host storage.

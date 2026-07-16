@@ -1,171 +1,193 @@
 # RRPP Agent Bridge
 
-`rrpp-agent-bridge` is a local-first, auditable bridge for customer communication channels. It persists inbound events, processes them asynchronously, produces reviewable drafts, and never sends an external message in the current version.
+`rrpp-agent-bridge` rep missatges d'Instagram, els desa abans de processar-los,
+demana una decisio estructurada a OpenClaw i deixa que el bridge decideixi si pot
+respondre automaticament o si cal una persona. Cada pas queda visible i auditat.
 
-The project uses Python 3.12, SQLite, Google OAuth libraries for the read-only Gmail connector, and optional Docker/Gunicorn tooling for deployment.
+```text
+Instagram webhook
+-> event i conversa persistents
+-> job durable
+-> worker
+-> OpenClaw rrpp
+-> politica del bridge
+-> draft, escalat o enviament oficial
+-> dashboard privat
+```
 
-## Safety model
+OpenClaw no te el token d'Instagram i no pot enviar res directament. El worker es
+l'unic component que pot usar l'API oficial de Meta, despres de comprovar politica,
+mode, pausa de conversa, idempotencia i estat del missatge.
 
-- The default execution mode is `shadow`.
-- Draft approval marks a response as prepared; it does not send it.
-- Gmail is read-only.
-- Instagram is inbound-only and validates Meta webhook signatures.
-- OpenClaw can generate drafts locally but has no channel-delivery capability.
-- The dashboard stays private on `127.0.0.1:8080`.
-- Inbound text is untrusted data, never operational instruction.
+## Requisits
 
-## First-time setup
+- Windows amb Python 3.12 o superior.
+- Compte professional d'Instagram vinculat a una Facebook Page.
+- Meta Developer App amb webhooks de missatgeria i els permisos aplicables.
+- OpenClaw local amb el Gateway a `127.0.0.1:18789`.
+- Un tunel HTTPS que exposi nomes el port del webhook (`8081`).
 
-Requires Python 3.12 or newer. From PowerShell in the repository root:
+Docker no es necessari per a la demo local.
+
+## Primera instal·lacio
+
+Des de PowerShell, a l'arrel del repositori:
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 Copy-Item .env.example .env
+.\.venv\Scripts\rrpp-bridge.exe migrate
 ```
 
-Fill the dashboard credentials in the ignored `.env`. Keep `RRPP_MODE=shadow` while testing. Do not commit `.env`, OAuth files, tokens, or tunnel credentials.
+No sobreescriguis un `.env` existent. `.env`, tokens i credencials estan ignorats
+per Git i no s'han de publicar ni enganxar en documentacio.
 
-If `.env` already exists, do not overwrite it with the example file.
+## Configuracio
 
-## Local dashboard test
-
-For a reliable first test, use separate terminals. This avoids starting optional connectors that may not be configured yet.
-
-Terminal 1: migrate and start the private dashboard.
-
-```powershell
-.\.venv\Scripts\python.exe -m rrpp_bridge migrate
-.\.venv\Scripts\python.exe -m rrpp_bridge web
-```
-
-Terminal 2: start the worker.
-
-```powershell
-.\.venv\Scripts\python.exe -m rrpp_bridge worker
-```
-
-Open `http://127.0.0.1:8080/login` and authenticate with `RRPP_DASHBOARD_USER` and `RRPP_DASHBOARD_PASSWORD` from `.env`.
-
-Use the local simulator in the dashboard to submit a test message. The expected flow is:
+Variables principals de l'Instagram inbound i outbound:
 
 ```text
-simulator -> event -> job -> worker -> draft -> human review
+RRPP_INSTAGRAM_ENABLED=true
+RRPP_INSTAGRAM_SEND_ENABLED=true
+RRPP_INSTAGRAM_PORT=8081
+RRPP_INSTAGRAM_GRAPH_BASE_URL=https://graph.instagram.com
+RRPP_INSTAGRAM_GRAPH_API_VERSION=v24.0
+RRPP_INSTAGRAM_SEND_TIMEOUT_SECONDS=15
+RRPP_RESPONSE_DEBOUNCE_SECONDS=3
+INSTAGRAM_VERIFY_TOKEN=valor-privat-del-webhook
+INSTAGRAM_APP_SECRET=secret-de-la-meta-app
+INSTAGRAM_PAGE_ACCESS_TOKEN=token-del-compte-professional
+INSTAGRAM_BUSINESS_ACCOUNT_ID=id-del-compte-per-a-la-Send-API
+INSTAGRAM_WEBHOOK_ACCOUNT_ID=id-receptor-observat-al-webhook
 ```
 
-Check `Converses`, `Cua de revisió`, `Activitat`, and `Sistema`. In `shadow` mode, every execution remains suppressed and simulated.
-
-`scripts/run-local.ps1` is a convenience command for the dashboard, worker, maintenance, and any locally authorized Gmail poller. It does not start the Instagram webhook. Prefer the separate terminals above while diagnosing or testing connectors.
-
-## OpenClaw draft generation
-
-OpenClaw is optional and replaces the deterministic placeholder as the worker's draft provider. It does not send messages. Every result is schema-validated, passed through policy, stored as a pending draft, and suppressed by `shadow` mode. If the Gateway times out or returns invalid output, the job remains durable and the dashboard receives a manual-review escalation.
-
-The Gateway connection is local, but the configured OpenClaw model may be a remote provider. With ChatGPT/OpenAI, bounded message content and venue context leave the laptop for model processing. Confirm the provider's privacy, retention, and account terms before processing real customer DMs.
-
-OpenClaw also maintains conversation sessions and local logs according to its own configuration. Review their retention and access permissions before production; the bridge audit log deliberately does not copy prompts, message bodies, venue knowledge, or provider responses.
-
-Prerequisites:
-
-1. Run an OpenClaw Gateway only on `127.0.0.1:18789` with token authentication.
-2. Enable its OpenAI-compatible Chat Completions HTTP endpoint.
-3. Create the OpenClaw agent ID `rrpp` and disable its tools and channel delivery.
-4. Use a dedicated random Gateway token; never give OpenClaw Instagram or Gmail credentials.
-
-On this Windows workstation, use the `.cmd` wrapper because PowerShell blocks the npm `.ps1` launcher. Check or start an already configured Gateway with:
-
-```powershell
-cmd /c openclaw gateway status
-cmd /c openclaw gateway run --bind loopback --port 18789 --auth token
-```
-
-Configure the token in OpenClaw's environment or secret configuration before starting it; do not pass a real token on the command line. Create the isolated agent when it does not exist with `cmd /c openclaw agents add rrpp`, then configure that agent with no bindings, `tools.deny=["*"]`, and elevated tools disabled.
-
-Add these values to the ignored `.env`:
+Variables d'OpenClaw:
 
 ```text
 OPENCLAW_ENABLED=true
 OPENCLAW_BASE_URL=http://127.0.0.1:18789
 OPENCLAW_AGENT_ID=rrpp
 OPENCLAW_TIMEOUT_SECONDS=60
-OPENCLAW_GATEWAY_TOKEN=your-local-gateway-token
+OPENCLAW_GATEWAY_TOKEN=token-local-del-gateway
 ```
 
-The Gateway token must match the token configured in OpenClaw. `OPENCLAW_AGENT_NAME=rrpp` is accepted as a compatibility alias, but `OPENCLAW_AGENT_ID` is the canonical key.
+El token de verificacio el tries tu i ha de coincidir amb Meta. L'App Secret, el
+token d'acces i l'ID del compte provenen de la Meta Developer App. El Gateway token
+ha de coincidir amb la configuracio local d'OpenClaw.
 
-After changing these values, migrate once and restart the worker because it selects its provider at process startup:
+Amb Instagram Login, el token necessita com a minim
+`instagram_business_basic` i `instagram_business_manage_messages`; `/me` ha de
+retornar el compte professional utilitzat per la Send API. Meta pot entregar un
+identificador de receptor diferent a `entry.id`; aquest valor s'ha de configurar
+separadament a `INSTAGRAM_WEBHOOK_ACCOUNT_ID` i mai s'ha d'inferir del text.
+
+El repositori nomes versiona la plantilla segura a `config/openclaw/AGENTS.md`.
+El workspace real d'OpenClaw viu a `var/openclaw-workspace/`, queda fora de Git i pot
+contenir estat local. Per preparar-lo i apuntar-hi l'agent:
 
 ```powershell
-.\.venv\Scripts\python.exe -m rrpp_bridge migrate
-.\.venv\Scripts\python.exe -m rrpp_bridge worker
+New-Item -ItemType Directory -Force var\openclaw-workspace | Out-Null
+Copy-Item config\openclaw\AGENTS.md var\openclaw-workspace\AGENTS.md -Force
+cmd /c openclaw config set agents.list[1].workspace C:\ruta\al\projecte\var\openclaw-workspace
 ```
 
-In `Discoteques`, fill **Informació verificada per al bot** with confirmed venue facts and configure an exact recipient route. Then submit a simulator message or send an Instagram DM. The expected flow is:
+L'agent `rrpp` ha de tenir `tools.deny=["*"]`, cap binding de canal i eines elevades
+desactivades.
 
-```text
-inbound message -> durable job -> worker -> OpenClaw rrpp -> validated draft -> pending human review
-```
+## Comprovar OpenClaw
 
-The worker sends bounded recent history and venue knowledge, not channel credentials. An unassigned conversation has no venue knowledge and must not infer a venue from message text.
-
-## Instagram inbound test
-
-Instagram support is inbound-only. It receives signed DM webhooks, creates/updates conversations, and creates reviewable drafts. It has no reply sender, proactive messaging, or outbound Graph API client.
-
-Before starting it, configure these ignored `.env` values:
-
-```text
-RRPP_INSTAGRAM_ENABLED=true
-INSTAGRAM_VERIFY_TOKEN=your-private-verification-value
-INSTAGRAM_APP_SECRET=Meta-App-Secret
-INSTAGRAM_BUSINESS_ACCOUNT_ID=Instagram-business-account-ID
-INSTAGRAM_PAGE_ACCESS_TOKEN=reserved-for-future-official-use
-```
-
-`INSTAGRAM_PAGE_ACCESS_TOKEN` is not used by the current inbound connector. Never put any of these values in source control, screenshots, or documentation.
-
-Terminal 3: start the dedicated webhook service.
+PowerShell pot bloquejar el launcher `.ps1` de npm; utilitza el wrapper `.cmd`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m rrpp_bridge instagram-webhook
+cmd /c openclaw gateway status
+.\.venv\Scripts\rrpp-bridge.exe agent-check
 ```
 
-It listens only on `http://127.0.0.1:8081`. A direct request without Meta verification returns `403`, which is expected.
+La segona ordre no envia cap missatge. El resultat correcte inclou:
 
-Terminal 4: expose only the webhook port for local Meta testing.
+```json
+{"action":"reply","provider":"openclaw","reason_code":"greeting","structured":true}
+```
+
+No activis la resposta automatica si `structured` no es `true`.
+
+## Arrencar la demo
+
+Executa cada servei en una terminal separada.
+
+Terminal 1, dashboard privat:
+
+```powershell
+.\.venv\Scripts\rrpp-bridge.exe web
+```
+
+Terminal 2, webhook d'Instagram:
+
+```powershell
+.\.venv\Scripts\rrpp-bridge.exe instagram-webhook
+```
+
+Terminal 3, worker i enviaments:
+
+```powershell
+.\.venv\Scripts\rrpp-bridge.exe worker
+```
+
+Terminal 4, tunel public nomes cap al webhook:
 
 ```powershell
 cloudflared tunnel --url http://127.0.0.1:8081
 ```
 
-Configure the public URL supplied by Cloudflare in Meta with this exact path:
+A Meta, la callback exacta es:
 
 ```text
-https://YOUR-CLOUDFLARE-HOST/webhooks/instagram
+https://EL-TEU-HOST/webhooks/instagram
 ```
 
-Do not tunnel port `8080` and do not expose the dashboard. For a stable Meta configuration, use a named Cloudflare tunnel and a fixed hostname rather than a temporary quick tunnel.
+Subscriu el camp de missatgeria corresponent als DMs. No exposis ni tunelitzis el
+port `8080`; el dashboard continua a `http://127.0.0.1:8080/login`.
 
-In the dashboard, create a venue route with channel `Instagram` and the exact configured Instagram business account ID as recipient. Without that explicit rule, incoming conversations remain `Sense assignar` by design.
-
-## Gmail read-only connector
-
-Gmail is optional and uses only the `gmail.readonly` OAuth scope. Place the OAuth client at `secrets/gmail-oauth-client.json`, then authorize:
+Comprova que no hi ha cua antiga i activa el mode automatic:
 
 ```powershell
-.\.venv\Scripts\rrpp-bridge.exe gmail-auth
-.\.venv\Scripts\rrpp-bridge.exe gmail-poll --once
+.\.venv\Scripts\rrpp-bridge.exe status
+.\.venv\Scripts\rrpp-bridge.exe set-mode live
 ```
 
-It can read Inbox messages but cannot send, delete, archive, label, or mark mail as read. If it reports `RefreshError`, authorize again and restart the poller:
+La UI mostra nomes els dos comportaments operatius:
 
-```powershell
-.\.venv\Scripts\rrpp-bridge.exe gmail-auth
-```
+- `Nomes lectura`: genera una proposta i no envia.
+- `Automatic`: envia nomes quan la politica determinista ho permet.
 
-## Operations and tests
+Per a la primera prova, envia `Hola` per DM des d'un usuari que ja hagi iniciat la
+conversa amb el compte professional. El dashboard ha de mostrar el missatge inbound,
+la decisio d'OpenClaw, el job, l'enviament i el missatge outbound.
 
-Useful commands:
+## Quan respon i quan escala
+
+Pot respondre automaticament a salutacions, agraiments, comiats, aclariments segurs
+i respostes basades en elements verificats del cataleg. Les respostes comercials han
+de referenciar els elements exactes que OpenClaw ha rebut.
+
+Sempre escala reserves, guest list, VIP o taules, pagaments, devolucions, queixes,
+seguretat, dades personals, informacio desconeguda o respostes que no compleixen
+l'esquema. Un timeout o resultat ambigu d'Instagram pausa el bot per a aquella
+conversa i evita un reintent cec.
+
+Des de la conversa del dashboard una persona pot editar o escriure una resposta,
+enviar-la per la mateixa cua auditada, pausar o reprendre el bot i resoldre o reobrir
+la conversa.
+
+## Cataleg comercial
+
+`Discoteques` administra informacio verificada, esdeveniments i ofertes. Una conversa
+pertany al canal, compte receptor i usuari extern; no pertany obligatoriament a una
+discoteca. OpenClaw pot comparar diverses opcions sense inferir una discoteca a partir
+del text del client.
+
+## Operacions
 
 ```powershell
 .\.venv\Scripts\rrpp-bridge.exe status
@@ -173,12 +195,12 @@ Useful commands:
 .\.venv\Scripts\rrpp-bridge.exe maintenance --once
 .\.venv\Scripts\rrpp-bridge.exe backup create --kind manual
 .\.venv\Scripts\rrpp-bridge.exe backup verify backups\BACKUP.db
-```
-
-Run the test suite with:
-
-```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-For Docker/VPS deployment, encrypted backups, SSH access, and the production Instagram ingress boundary, read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The persistent architecture and security rules are in [docs/agent-guide/](docs/agent-guide/README.md).
+`scripts/run-local.ps1` inicia dashboard, worker i manteniment. El webhook i el tunel
+es mantenen separats per no exposar accidentalment el dashboard.
+
+Per a desplegament i backups, consulta [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Les
+decisions, invariants i errors reutilitzables son a
+[docs/agent-guide/](docs/agent-guide/README.md).

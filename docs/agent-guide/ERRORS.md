@@ -16,6 +16,22 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-07-16 - Random IDs were used to break equal message timestamps
+
+- Context: Invalidating an OpenClaw response when a newer inbound message arrives during generation.
+- Error: Equal millisecond timestamps were broken by random event IDs, so an older event could be classified as newer and supersede the wrong job.
+- Cause: The implementation reused display ordering as causal ingestion ordering even though generated IDs carry no chronology.
+- Correction: Compare the SQLite insertion sequence for events within the same conversation and keep IDs only for correlation.
+- Prevention: Concurrency and supersession checks require an explicit monotonic sequence; never infer causality from timestamps plus random IDs.
+
+### 2026-07-16 - Catalog UI repeated nested f-string failure
+
+- Context: Rendering an optional formatted catalog price in the server-rendered venue page.
+- Error: A nested f-string with escaped dictionary-key quotes made `web.py` fail compilation.
+- Cause: Price formatting logic was embedded inside an already interpolated HTML expression despite the existing prevention rule for this exact pattern.
+- Correction: Move price formatting into a small helper and interpolate only its completed string; compile the package immediately.
+- Prevention: Treat the existing no-nested-f-string rule as a review gate: any conditional or formatted value used by server-rendered HTML must be computed before the HTML expression.
+
 ### 2026-07-16 - Windows execution policy blocked OpenClaw and local scripts
 
 - Context: Inspecting the installed OpenClaw CLI and securely synchronizing its existing Gateway token into the ignored project environment.
@@ -93,8 +109,8 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Context: Restarting and inspecting the local Instagram webhook and Cloudflare tunnel.
 - Error: `Start-Process` with output redirection failed on duplicate `Path`/`PATH` environment keys, and the retired `wmic` tool was unavailable for command-line inspection.
 - Cause: The managed shell exposes case-variant environment keys and this Windows installation does not include WMIC.
-- Correction: Launch the interactive webhook in its own console and validate it through `netstat` plus an HTTP request.
-- Prevention: Do not depend on redirected `Start-Process` or WMIC in local runbooks; document the intended Cloudflare origin port explicitly.
+- Correction: Rebuild the process `Path` from machine and user values, remove both case variants from the process environment, launch hidden without redirection outside the sandbox job, and validate through `netstat` plus health checks.
+- Prevention: Do not use redirected `Start-Process` or WMIC on this workstation. Normalize `Path`, use `-WindowStyle Hidden`, and start long-running demo processes outside the temporary sandbox job.
 
 ### 2026-07-02 - Git commit attempted inside read-only metadata sandbox
 
@@ -263,3 +279,52 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Cause: The command inferred descriptive filenames instead of first using the repository's actual migration inventory.
 - Correction: List `rrpp_bridge/sql/` and inspect the recorded filenames before reading migration contents.
 - Prevention: Never guess repository filenames in diagnostic commands; use `rg --files` or a directory listing first.
+
+### 2026-07-16 - Generic OpenClaw workspace returned the obsolete response contract
+
+- Context: Running the real local OpenClaw smoke test before enabling Instagram delivery.
+- Error: The reachable `rrpp` agent returned the obsolete `decision/reply` object instead of the five-field bridge decision, so validation rejected it.
+- Cause: The agent still used OpenClaw's generic workspace; request-level schema instructions alone did not reliably override its response convention.
+- Correction: Version only the safe `config/openclaw/AGENTS.md` template, copy it to the ignored `var/openclaw-workspace/`, point `rrpp` there, start a fresh check session, and retain strict bridge-side schema validation.
+- Prevention: Keep runtime workspaces outside version control. Run `rrpp-bridge agent-check` after any OpenClaw workspace, model, or Gateway change. Never enable automatic delivery unless it reports `structured: true` with the current contract.
+
+### 2026-07-16 - OpenClaw runtime workspace was placed inside the tracked source tree
+
+- Context: Preparing the `rrpp` agent contract for the outbound Instagram demo.
+- Error: The runtime workspace was created at the repository root, where OpenClaw generated identity, bootstrap, heartbeat, tool, user, and state files that could accidentally be committed later.
+- Cause: The response contract and OpenClaw runtime state were treated as one artifact.
+- Correction: Keep the reviewed contract template in `config/openclaw/AGENTS.md`; copy it into the ignored `var/openclaw-workspace/` for local execution.
+- Prevention: Version agent policy templates, never mutable agent workspaces, memory, sessions, bootstrap state, or locally generated identity files.
+
+### 2026-07-16 - Secret-bearing environment lines were included in diagnostic output
+
+- Context: Confirming the exact Instagram outbound feature-flag name before the live demo.
+- Error: A broad repository search included `.env` and printed matching credential lines alongside harmless configuration flags.
+- Cause: The diagnostic searched by the `INSTAGRAM_` prefix instead of restricting `.env` output to an allowlist of non-secret keys.
+- Correction: Do not persist or repeat the values; use exact-key parsing that reports only boolean flags or whether a secret is present.
+- Prevention: Exclude `.env` from broad searches. For secret-bearing configuration, emit only key names, presence, length class, or a redacted value.
+
+### 2026-07-16 - Job status diagnostic used the wrong persisted column name
+
+- Context: Checking whether the worker was alive or blocked while diagnosing a missing Instagram DM.
+- Error: The diagnostic queried `jobs.status`, although the queue schema names the column `jobs.state`.
+- Cause: The query was written from the dashboard vocabulary instead of the inspected database schema.
+- Correction: Query `state` and keep user-facing grouped labels separate from persisted field names.
+- Prevention: Inspect the table schema before issuing ad hoc operational SQL, even when a similarly named field exists in the UI model.
+- Recurrence: The same assumption was repeated against `deliveries.state`; that table uses `deliveries.status`. The corrected query and schema inspection confirmed one real delivery in `sent` state.
+
+### 2026-07-16 - Pre-staging diff check omitted untracked files
+
+- Context: Running final validation before committing the account-centered Instagram delivery increment.
+- Error: `git diff --check` passed before staging but two new Python files still contained trailing whitespace.
+- Cause: The normal working-tree diff does not include untracked files.
+- Correction: Stage the reviewed files and run `git diff --cached --check`; remove the reported whitespace before committing.
+- Prevention: For changes containing new files, treat the staged diff check as mandatory in addition to the pre-staging working-tree check.
+
+### 2026-07-16 - Meta token was validated against the wrong identity endpoint
+
+- Context: Checking whether the configured Instagram token and professional account ID matched before the outbound demo.
+- Error: A `graph.instagram.com/{id}` check was interpreted as an account mismatch, then a Facebook Page lookup returned `401`.
+- Cause: The diagnosis initially assumed a Facebook Page Access Token, while the configured credential uses Instagram Login and represents an Instagram professional account.
+- Correction: Identify the login type from the host that accepts the token, use `graph.instagram.com/me` for Instagram Login, align the local professional account ID, and keep the Send API on the official Instagram host.
+- Prevention: Token checks must first distinguish Instagram Login from Facebook Login. Never infer an account mismatch by comparing identities returned from endpoints belonging to different login models.

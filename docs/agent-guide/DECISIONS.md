@@ -16,11 +16,14 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 | ADR-0001 | Use a persistent agent guide as repository context | Accepted | 2026-06-19 |
 | ADR-0002 | Select the V1 application stack | Accepted | 2026-06-19 |
 | ADR-0003 | Persist runtime mode and allow audited administration | Accepted | 2026-06-19 |
-| ADR-0004 | Use Gmail API as the first read-only connector | Accepted | 2026-06-19 |
-| ADR-0005 | Add operational venues, conversations, and human review | Accepted | 2026-06-21 |
+| ADR-0004 | Use Gmail API as the first read-only connector | Superseded | 2026-06-19 |
+| ADR-0005 | Add operational venues, conversations, and human review | Superseded | 2026-06-21 |
 | ADR-0006 | Operate a private single-host deployment | Accepted | 2026-06-21 |
-| ADR-0007 | Add a signed inbound-only Instagram webhook | Accepted | 2026-07-02 |
-| ADR-0008 | Use OpenClaw as a local draft-generation provider | Accepted | 2026-07-16 |
+| ADR-0007 | Add a signed inbound-only Instagram webhook | Superseded | 2026-07-02 |
+| ADR-0008 | Use OpenClaw as a local draft-generation provider | Superseded | 2026-07-16 |
+| ADR-0009 | Center conversations on channel accounts and customers | Accepted | 2026-07-16 |
+| ADR-0010 | Add bridge-controlled Instagram delivery | Accepted | 2026-07-16 |
+| ADR-0011 | Retire Gmail from the active product | Accepted | 2026-07-16 |
 
 ## ADR-0001: Persistent Agent Guide
 
@@ -99,6 +102,50 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 - Alternatives: Calling OpenClaw directly from the worker would couple queue processing to one runtime. Using the full WebSocket control protocol adds unnecessary transport complexity. Calling an LLM provider directly would bypass the approved OpenClaw agent workspace. Giving OpenClaw an Instagram channel would bypass bridge policy and audit controls.
 - Consequences: The OpenClaw Chat Completions endpoint must be explicitly enabled on a dedicated loopback Gateway, protected with a token, and the `rrpp` agent must have tools and channel delivery disabled. The Gateway hop is local but a configured remote model provider remains a customer-data egress boundary. Model output remains untrusted and cannot execute actions. The bridge stores no Gateway secret outside environment configuration and never writes prompts, message bodies, venue knowledge, tokens, or raw provider errors to audit records.
 - Validation: Unit tests use fake providers and mocked HTTP transport to cover structured and bounded-text drafts, bounded context, authentication redaction, timeout, HTTP failure, malformed output, manual escalation, simulator and Instagram flows, and continued suppression of all external execution in `shadow` mode.
+
+## ADR-0009: Account-Centered Conversations and Structured Agent Decisions
+
+- Status: Accepted
+- Date: 2026-07-16
+- Context: One customer may compare multiple venues, events, and offers inside one Instagram conversation. Binding a conversation to one venue prevents accurate catalog-wide answers and makes venue routing an incorrect ownership boundary.
+- Decision: Identify a conversation by channel, receiving account, and external customer. Keep venues, events, offers, links, availability, and verified timestamps in a structured bridge-owned catalog. OpenClaw receives bounded conversation history and a bounded catalog snapshot, then returns only a schema-validated decision: `reply`, `ask_clarification`, `human_required`, or `ignore`. Referenced catalog items must exist in the supplied snapshot. OpenClaw receives no database credentials, arbitrary query capability, or executable action interface. Plain-text compatibility output may create human review but can never qualify for automatic delivery.
+- Alternatives: Sending the whole catalog on every request scales poorly. Giving the Gateway direct database tools increases prompt-injection and credential risk. Keeping one venue per conversation cannot support comparisons.
+- Consequences: Existing conversation IDs remain stable, while venue assignment becomes legacy metadata. Commercial facts move out of free-form prompts over time. The bridge, not the model, decides policy, mode, idempotency, pause state, and delivery eligibility.
+- Validation: Migration and tests cover identity backfill, multi-venue catalog context, strict output validation, invalid references, hard escalation rules, and compatibility fallback behavior.
+- Supersedes: ADR-0005 and the generation contract in ADR-0008.
+
+## ADR-0010: Bridge-Controlled Instagram Delivery
+
+- Status: Accepted
+- Date: 2026-07-16
+- Context: The owner requires an operational demo in which safe OpenClaw replies and authenticated human replies can be sent to customers who initiated an Instagram conversation.
+- Decision: Add a dedicated official Instagram Send API client owned by the bridge worker. OpenClaw never receives the Instagram access token and cannot call the channel. A real send requires a schema-valid response, explicit policy `allowed`, an unpaused conversation, a configured receiving account, a current `canary` or `live` mode, and a durable idempotent delivery record created before the network call. `shadow` and `dry-run` never send. Canary is restricted by the existing sender allowlist. Human dashboard responses use the same delivery queue, CSRF, audit, and idempotency path. Ambiguous transport results fail closed for human reconciliation rather than blind retry.
+- Alternatives: Giving OpenClaw an Instagram binding bypasses bridge policy and audit. Sending directly from the dashboard couples a request to an external side effect. Treating approval as an immediate network call weakens recovery and duplicate protection.
+- Consequences: The Instagram token remains environment-only. Real customer content may leave the bridge through both the configured model provider and Meta. Automatic replies remain restricted by hard business and safety rules. Deployment must run the delivery-capable worker and use only the official API.
+- Validation: Tests mock all HTTP calls and cover mode suppression, canary scope, policy blocks, pause state, idempotency, success, definite failures, ambiguous failures, human authorship, and absence of credentials in audit/errors.
+- Supersedes: ADR-0007 and the no-delivery boundary in ADR-0008.
+
+## ADR-0011: Retire Gmail from the Active Product
+
+- Status: Accepted
+- Date: 2026-07-16
+- Context: Gmail is no longer part of the intended product and should not add processes, credentials, UI, or dependencies to the Instagram-focused deployment.
+- Decision: Remove Gmail adapter, poller, CLI commands, process definitions, configuration, dependencies, UI, and connector tests in phases. Preserve historical migrations and shared generic tables so existing databases remain upgradeable. Do not automatically delete historical Gmail events or local ignored credentials; deletion requires a separate explicit retention action.
+- Alternatives: Leaving Gmail optional continues maintenance and operational ambiguity. Deleting old migrations breaks deployed databases.
+- Consequences: The active runtime becomes web, Instagram ingress, worker, and maintenance. Historical Gmail rows remain readable until a separately approved purge.
+- Validation: Fresh and upgraded databases migrate, the package has no Google runtime dependencies, active UI and commands omit Gmail, and the full remaining suite passes.
+- Supersedes: ADR-0004.
+
+## ADR-0012: Separate Instagram Webhook and Send Account Identifiers
+
+- Status: Accepted
+- Date: 2026-07-16
+- Context: The live Instagram Login integration delivers signed webhook messages with a receiver identifier that differs from the professional account identifier returned by the Graph API for outbound Send API calls. Reusing one setting caused valid inbound DMs to be acknowledged but ignored after outbound configuration was corrected.
+- Decision: Configure `INSTAGRAM_WEBHOOK_ACCOUNT_ID` as the exact receiver accepted by the signed inbound normalizer and retain `INSTAGRAM_BUSINESS_ACCOUNT_ID` exclusively as the account path for the official Send API. Require both when outbound sending is enabled. Do not infer either identifier from message content or silently accept arbitrary receiver accounts.
+- Alternatives: Accepting every receiver in a correctly signed payload would weaken explicit account routing. Reusing the webhook receiver for sending fails against the observed API identity. Dynamically rewriting configuration from traffic would make account authorization implicit.
+- Consequences: Existing deployments without the new variable retain compatibility by falling back to the business account ID. Deployments where Meta exposes different identifiers must configure both. Neither identifier is a secret, while tokens and app secrets remain environment-only.
+- Validation: Tests use distinct inbound and outbound identifiers, require complete send configuration, and confirm that a signed message for the configured webhook receiver is persisted.
+- Supersedes: The single-account-identifier assumption in ADR-0007 and ADR-0010.
 
 ## ADR Template
 

@@ -46,7 +46,10 @@ class LocalActionExecutor:
             return ExecutionResult(str(existing["status"]), str(existing["reason"]))
         result = decide_execution(mode, policy_outcome, sender, self.canary_senders)
         timestamp = utc_now()
-        if policy_outcome in {"pending_approval", "escalated"}:
+        pending_review = self.conn.execute(
+            "SELECT 1 FROM action_reviews WHERE action_id=? AND status='pending'", (action["id"],)
+        ).fetchone()
+        if policy_outcome in {"pending_approval", "escalated"} or pending_review:
             action_state = "pending_review"
         else:
             action_state = "executed_simulated" if result.status == "executed" else "suppressed"

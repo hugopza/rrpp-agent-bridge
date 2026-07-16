@@ -24,6 +24,31 @@ class IntendedAction:
 
 
 @dataclass(frozen=True)
+class ReferencedItem:
+    type: str
+    id: str
+    verified_at: str
+
+
+@dataclass(frozen=True)
+class AgentDecision:
+    action: str
+    text: str
+    language: str
+    reason_code: str
+    referenced_items: tuple[ReferencedItem, ...] = ()
+    structured: bool = True
+
+
+@dataclass(frozen=True)
+class CatalogItem:
+    type: str
+    id: str
+    verified_at: str
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class PolicyDecision:
     outcome: str
     policy_id: str

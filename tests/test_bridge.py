@@ -50,16 +50,16 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(1, self.conn.execute("SELECT count(*) FROM events").fetchone()[0])
         self.assertEqual("queued", self.conn.execute("SELECT state FROM jobs").fetchone()[0])
 
-    def test_shadow_worker_suppresses_and_audits_draft(self):
+    def test_disabled_provider_escalates_safely_in_shadow(self):
         ingest_local(self.conn, self.payload())
         self.assertTrue(process_one(self.conn))
         action = self.conn.execute("SELECT * FROM actions").fetchone()
         decision = self.conn.execute("SELECT * FROM policy_decisions").fetchone()
         execution = self.conn.execute("SELECT * FROM action_executions").fetchone()
-        self.assertEqual(("draft_reply", "pending_review", "shadow"),
+        self.assertEqual(("escalate_to_owner", "pending_review", "shadow"),
                          (action["type"], action["state"], action["mode"]))
-        self.assertEqual("pending_approval", decision["outcome"])
-        self.assertEqual(("suppressed", "policy_pending_approval", 1),
+        self.assertEqual("escalated", decision["outcome"])
+        self.assertEqual(("suppressed", "policy_escalated", 1),
                          (execution["status"], execution["reason"], execution["simulated"]))
         self.assertEqual(("draft", "pending"), tuple(self.conn.execute(
             "SELECT kind,status FROM action_reviews"
@@ -86,13 +86,13 @@ class BridgeTests(unittest.TestCase):
             result = decide_execution(mode, "allowed", sender, allowlist)
             self.assertEqual((status, reason), (result.status, result.reason), f"case {index}")
 
-    def test_venue_routing_groups_messages_and_resolved_conversation_reopens(self):
+    def test_account_customer_groups_messages_without_venue_and_reopens(self):
         venue_id = create_venue(self.conn, "Club Test", "club-test", "es", "admin")
         add_route(self.conn, venue_id, "local", "promoter", "admin")
         ingest_local(self.conn, self.payload("thread-1"))
         ingest_local(self.conn, self.payload("thread-2"))
         row = self.conn.execute("SELECT * FROM conversations").fetchone()
-        self.assertEqual((venue_id, "open", 2), (row["venue_id"], row["status"], self.conn.execute(
+        self.assertEqual((None, "open", 2), (row["venue_id"], row["status"], self.conn.execute(
             "SELECT count(*) FROM events WHERE conversation_id=?", (row["id"],)
         ).fetchone()[0]))
         self.assertTrue(set_conversation_status(self.conn, row["id"], "resolved", "admin"))
@@ -124,20 +124,14 @@ class BridgeTests(unittest.TestCase):
         audit = " ".join(row[0] for row in self.conn.execute("SELECT details_json FROM audit_log"))
         self.assertNotIn("Resposta revisada", audit)
 
-    def test_conversation_stays_pending_until_all_reviews_are_closed(self):
+    def test_message_burst_supersedes_older_job_and_creates_one_review(self):
         ingest_local(self.conn, self.payload("pending-1"))
         ingest_local(self.conn, self.payload("pending-2"))
         process_one(self.conn)
-        process_one(self.conn)
         reviews = self.conn.execute("SELECT id FROM action_reviews ORDER BY created_at,id").fetchall()
-        conversation_id = self.conn.execute("SELECT id FROM conversations").fetchone()[0]
-        self.assertTrue(transition_review(self.conn, reviews[0]["id"], "prepared", "admin"))
-        self.assertEqual("pending_review", self.conn.execute(
-            "SELECT status FROM conversations WHERE id=?", (conversation_id,)
-        ).fetchone()[0])
-        self.assertTrue(transition_review(self.conn, reviews[1]["id"], "prepared", "admin"))
-        self.assertEqual("open", self.conn.execute(
-            "SELECT status FROM conversations WHERE id=?", (conversation_id,)
+        self.assertEqual(1, len(reviews))
+        self.assertEqual(1, self.conn.execute(
+            "SELECT count(*) FROM jobs WHERE state='superseded'"
         ).fetchone()[0])
 
     def test_backoff_then_dead_letter(self):
@@ -171,7 +165,8 @@ class BridgeTests(unittest.TestCase):
         first = queue.claim_next("worker-1")
         second = queue.claim_next("worker-2")
         self.assertNotEqual(first["work_key"], second["work_key"])
-        self.assertEqual(1, self.conn.execute("SELECT count(*) FROM jobs WHERE state='queued'").fetchone()[0])
+        self.assertEqual(1, self.conn.execute("SELECT count(*) FROM jobs WHERE state='superseded'").fetchone()[0])
+        self.assertEqual(0, self.conn.execute("SELECT count(*) FROM jobs WHERE state='queued'").fetchone()[0])
 
     def test_manual_retry_and_dismiss_are_audited(self):
         for message_id in ("retry", "dismiss"):
@@ -352,23 +347,17 @@ class WebTests(unittest.TestCase):
         self.assertEqual("200 OK", dashboard["status"])
         self.assertIn('href="/assets/dashboard.css"', page)
         self.assertIn('class="grid metrics"', page)
-        self.assertIn("Mode d’execució", page)
-        self.assertIn("Connector Gmail", page)
+        self.assertIn("Mode operatiu", page)
+        self.assertIn("Instagram", page)
 
     def test_execution_modes_have_clear_catalan_labels_without_changing_values(self):
         cookie, _ = self.login()
         _, page = self.request(cookie=cookie)
-        expected = {
-            "shadow": "Observació",
-            "dry-run": "Simulació",
-            "canary": "Prova limitada",
-            "live": "Actiu",
-        }
+        expected = {"shadow": "Nomes lectura", "live": "Automatic"}
         for value, label in expected.items():
             self.assertIn(f'value="{value}"', page)
             self.assertIn(label, page)
-        self.assertIn("No intenta executar cap acció", page)
-        self.assertIn("remitents de prova autoritzats", page)
+        self.assertIn("Nomes s'envien respostes que superen la politica", page)
 
     def test_dashboard_escapes_untrusted_message_fields(self):
         conn = connect(self.path)
@@ -443,10 +432,10 @@ class WebTests(unittest.TestCase):
             self.assertEqual("200 OK", result["status"])
             self.assertIn(label, page)
         _, dashboard = self.request(cookie=cookie)
-        self.assertIn("Les 8 converses més recents", dashboard)
-        self.assertIn("últims 10 moviments", dashboard)
+        self.assertIn("Les 12 converses mes recents", dashboard)
+        self.assertIn("Errors que requereixen atencio", dashboard)
 
-    def test_dashboard_manages_venue_routing_and_human_review_with_csrf(self):
+    def test_dashboard_manages_catalog_and_human_review_with_csrf(self):
         cookie, csrf = self.login()
         page_result, venues_page = self.request("/venues", cookie=cookie)
         self.assertEqual("200 OK", page_result["status"])
@@ -459,13 +448,10 @@ class WebTests(unittest.TestCase):
         self.assertEqual("303 See Other", created["status"])
         updated_page, venues_page = self.request("/venues", cookie=cookie)
         self.assertEqual("200 OK", updated_page["status"])
-        self.assertIn('<option value="instagram">Instagram</option>', venues_page)
+        self.assertIn("Esdeveniments i ofertes", venues_page)
         conn = connect(self.path)
         venue_id = conn.execute("SELECT id FROM venues WHERE slug='sala-nord'").fetchone()[0]
         conn.close()
-        route_body = urlencode({"csrf": csrf, "channel": "local", "recipient": "promoter"})
-        routed, _ = self.request(f"/venues/{venue_id}/routes", "POST", route_body, cookie)
-        self.assertEqual("303 See Other", routed["status"])
         simulate = urlencode({"csrf": csrf, **BridgeTests.payload("review-web")})
         self.request("/simulate", "POST", simulate, cookie)
         conn = connect(self.path)
@@ -473,21 +459,18 @@ class WebTests(unittest.TestCase):
         review_id = conn.execute("SELECT id FROM action_reviews").fetchone()[0]
         conversation = conn.execute("SELECT id,venue_id FROM conversations").fetchone()
         conn.close()
-        self.assertEqual(venue_id, conversation["venue_id"])
+        self.assertIsNone(conversation["venue_id"])
         denied, _ = self.request(f"/reviews/{review_id}/edit", "POST", "text=Canvi", cookie)
         self.assertEqual("403 Forbidden", denied["status"])
         edited, _ = self.request(f"/reviews/{review_id}/edit", "POST",
                                  urlencode({"csrf": csrf, "text": "Resposta preparada"}), cookie)
-        approved, _ = self.request(f"/reviews/{review_id}/approve", "POST",
+        approved, _ = self.request(f"/reviews/{review_id}/reject", "POST",
                                    urlencode({"csrf": csrf}), cookie)
         self.assertEqual(("303 See Other", "303 See Other"), (edited["status"], approved["status"]))
         conn = connect(self.path)
-        self.assertEqual("prepared", conn.execute("SELECT status FROM action_reviews").fetchone()[0])
+        self.assertEqual("rejected", conn.execute("SELECT status FROM action_reviews").fetchone()[0])
         self.assertEqual(1, conn.execute("SELECT count(*) FROM action_executions WHERE status='suppressed'").fetchone()[0])
-        route_id = conn.execute("SELECT id FROM venue_routes").fetchone()[0]
         conn.close()
-        disabled, _ = self.request(f"/routes/{route_id}/disable", "POST", urlencode({"csrf": csrf}), cookie)
-        self.assertEqual("303 See Other", disabled["status"])
 
     def test_activity_uses_stable_bounded_pagination(self):
         conn = connect(self.path)
@@ -504,7 +487,7 @@ class WebTests(unittest.TestCase):
         _, second = self.request(f"/activity?cursor={match.group(1)}", cookie=cookie)
         self.assertNotIn("operation.64", second)
         _, dashboard = self.request(cookie=cookie)
-        self.assertEqual(10, dashboard.count("class='activity-item'"))
+        self.assertEqual(0, dashboard.count("activity-item"))
 
 
 if __name__ == "__main__":
