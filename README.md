@@ -1,95 +1,132 @@
 # RRPP Agent Bridge
 
-Dependency-free V1 bridge foundation for safe, observable processing of future customer communication channels.
+`rrpp-agent-bridge` is a local-first, auditable bridge for customer communication channels. It persists inbound events, processes them asynchronously, produces reviewable drafts, and never sends an external message in the current version.
 
-## Local setup
+The project uses Python 3.12, SQLite, Google OAuth libraries for the read-only Gmail connector, and optional Docker/Gunicorn tooling for deployment.
 
-Requires Python 3.12 or newer. Set the environment variables shown in `.env.example`; do not commit a real `.env` file.
+## Safety model
 
-The application automatically reads a repository-local `.env` file and never overrides variables already supplied by the operating system.
+- The default execution mode is `shadow`.
+- Draft approval marks a response as prepared; it does not send it.
+- Gmail is read-only.
+- Instagram is inbound-only and validates Meta webhook signatures.
+- The dashboard stays private on `127.0.0.1:8080`.
+- Inbound text is untrusted data, never operational instruction.
 
-PowerShell example:
+## First-time setup
 
-```powershell
-$env:RRPP_DASHBOARD_USER = "admin"
-$env:RRPP_DASHBOARD_PASSWORD = "use-a-long-random-password"
-$env:RRPP_SESSION_SECRET = "use-at-least-32-random-characters-here"
-$env:RRPP_MODE = "shadow"
-python -m rrpp_bridge init-db
-python -m rrpp_bridge web
-```
-
-In a second terminal, run the independent worker:
+Requires Python 3.12 or newer. From PowerShell in the repository root:
 
 ```powershell
-python -m rrpp_bridge worker
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+Copy-Item .env.example .env
 ```
 
-Open `http://127.0.0.1:8080`, authenticate, and submit a local simulator event. The event is durably persisted before the worker handles it. V1 produces drafts or owner escalations but has no external sender.
+Fill the dashboard credentials in the ignored `.env`. Keep `RRPP_MODE=shadow` while testing. Do not commit `.env`, OAuth files, tokens, or tunnel credentials.
 
-The dashboard provides a bounded overview plus dedicated views for conversations, human review, full audit activity, and nightlife venues. Create a venue and add an exact Gmail recipient address or simulator recipient as its routing rule. Unmatched conversations remain under `Sense assignar`. Approving a draft only marks it prepared; it never sends a message.
+If `.env` already exists, do not overwrite it with the example file.
 
-Docker is not required. The web process and worker use the same SQLite database and should run in separate terminals. The dashboard can change the durable execution mode, retry dead-letter jobs, and dismiss terminal failures. All V1 execution records target a network-free local sink and are marked as simulated.
+## Local dashboard test
 
-`scripts/run-local.ps1` also starts the Gmail poller when authorized and the maintenance process for health reporting and scheduled backups. The `Sistema` view shows service heartbeats and recovery status.
+For a reliable first test, use separate terminals. This avoids starting optional connectors that may not be configured yet.
 
-Useful operational commands:
+Terminal 1: migrate and start the private dashboard.
 
 ```powershell
-python -m rrpp_bridge migrate
-python -m rrpp_bridge status
-python -m rrpp_bridge recover-stale
-python -m rrpp_bridge worker --once
+.\.venv\Scripts\python.exe -m rrpp_bridge migrate
+.\.venv\Scripts\python.exe -m rrpp_bridge web
 ```
 
-`migrate` creates a consistent SQLite backup before applying pending migrations. Existing databases never migrate during normal startup; web, worker, and poller processes stop with an explicit instruction if this command is required. Automatic retries use bounded exponential backoff. Expired worker leases are recovered automatically and can also be recovered explicitly with the CLI.
-
-Operational commands:
+Terminal 2: start the worker.
 
 ```powershell
-python -m rrpp_bridge backup create --kind manual
-python -m rrpp_bridge backup verify backups\BACKUP.db
-python -m rrpp_bridge restore backups\BACKUP.db --confirm RESTORE
-python -m rrpp_bridge maintenance --once
+.\.venv\Scripts\python.exe -m rrpp_bridge worker
 ```
 
-For the private Docker/VPS topology, backup encryption, SSH access, and restore procedure, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Open `http://127.0.0.1:8080/login` and authenticate with `RRPP_DASHBOARD_USER` and `RRPP_DASHBOARD_PASSWORD` from `.env`.
 
-`RRPP_CANARY_SENDERS` is a comma-separated allowlist used only in `canary` mode. Even `live` uses the simulated local sink in V1; adding a real external executor requires a separate security review and ADR.
+Use the local simulator in the dashboard to submit a test message. The expected flow is:
 
-After the local virtual environment and `.env` have been prepared, the shortest startup command is:
+```text
+simulator -> event -> job -> worker -> draft -> human review
+```
+
+Check `Converses`, `Cua de revisió`, `Activitat`, and `Sistema`. In `shadow` mode, every execution remains suppressed and simulated.
+
+`scripts/run-local.ps1` is a convenience command for the dashboard, worker, maintenance, and any locally authorized Gmail poller. It does not start the Instagram webhook. Prefer the separate terminals above while diagnosing or testing connectors.
+
+## Instagram inbound test
+
+Instagram support is inbound-only. It receives signed DM webhooks, creates/updates conversations, and creates reviewable drafts. It has no reply sender, proactive messaging, or outbound Graph API client.
+
+Before starting it, configure these ignored `.env` values:
+
+```text
+RRPP_INSTAGRAM_ENABLED=true
+INSTAGRAM_VERIFY_TOKEN=your-private-verification-value
+INSTAGRAM_APP_SECRET=Meta-App-Secret
+INSTAGRAM_BUSINESS_ACCOUNT_ID=Instagram-business-account-ID
+INSTAGRAM_PAGE_ACCESS_TOKEN=reserved-for-future-official-use
+```
+
+`INSTAGRAM_PAGE_ACCESS_TOKEN` is not used by the current inbound connector. Never put any of these values in source control, screenshots, or documentation.
+
+Terminal 3: start the dedicated webhook service.
 
 ```powershell
-.\scripts\run-local.ps1
+.\.venv\Scripts\python.exe -m rrpp_bridge instagram-webhook
 ```
 
-This runs the worker in a hidden child process and the dashboard in the current terminal. Press `Ctrl+C` to stop the dashboard; the script also stops its worker process.
+It listens only on `http://127.0.0.1:8081`. A direct request without Meta verification returns `403`, which is expected.
 
-Open `http://127.0.0.1:8080/login`. The prepared local username is `admin`; its generated password is the `RRPP_DASHBOARD_PASSWORD` value in the ignored `.env` file.
+Terminal 4: expose only the webhook port for local Meta testing.
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:8081
+```
+
+Configure the public URL supplied by Cloudflare in Meta with this exact path:
+
+```text
+https://YOUR-CLOUDFLARE-HOST/webhooks/instagram
+```
+
+Do not tunnel port `8080` and do not expose the dashboard. For a stable Meta configuration, use a named Cloudflare tunnel and a fixed hostname rather than a temporary quick tunnel.
+
+In the dashboard, create a venue route with channel `Instagram` and the exact configured Instagram business account ID as recipient. Without that explicit rule, incoming conversations remain `Sense assignar` by design.
 
 ## Gmail read-only connector
 
-Place the installed-application OAuth client at `secrets/gmail-oauth-client.json`, then authorize once:
+Gmail is optional and uses only the `gmail.readonly` OAuth scope. Place the OAuth client at `secrets/gmail-oauth-client.json`, then authorize:
 
 ```powershell
 .\.venv\Scripts\rrpp-bridge.exe gmail-auth
 .\.venv\Scripts\rrpp-bridge.exe gmail-poll --once
 ```
 
-The requested scope is only `gmail.readonly`. Credentials remain under ignored `secrets/`; the connector reads `INBOX`, never sends, deletes, archives, labels, marks read, or otherwise changes email. After authorization, `scripts/run-local.ps1` automatically starts the Gmail poller beside web and worker.
-
-## Instagram inbound connector
-
-Instagram DM support is inbound-only. Configure the variables in `.env.example`, migrate the database, and start the dedicated webhook process through the `instagram` Compose profile. Valid signed text messages enter the same conversation, worker, draft, and human-review flow as other channels. No Instagram API client or reply sender exists.
-
-For local callback testing, run `python -m rrpp_bridge instagram-webhook`; it listens on the configured loopback port and remains unavailable while `RRPP_INSTAGRAM_ENABLED=false`.
-
-Create venue routes with channel `instagram` and the exact Instagram business account ID as recipient. Unmatched conversations remain `Sense assignar`. See `docs/DEPLOYMENT.md` for the public HTTPS boundary and Meta setup checklist.
-
-## Tests
+It can read Inbox messages but cannot send, delete, archive, label, or mark mail as read. If it reports `RefreshError`, authorize again and restart the poller:
 
 ```powershell
-python -m unittest discover -s tests -v
+.\.venv\Scripts\rrpp-bridge.exe gmail-auth
 ```
 
-See [`docs/agent-guide/`](docs/agent-guide/README.md) for requirements, architecture, security rules, and delivery milestones.
+## Operations and tests
+
+Useful commands:
+
+```powershell
+.\.venv\Scripts\rrpp-bridge.exe status
+.\.venv\Scripts\rrpp-bridge.exe worker --once
+.\.venv\Scripts\rrpp-bridge.exe maintenance --once
+.\.venv\Scripts\rrpp-bridge.exe backup create --kind manual
+.\.venv\Scripts\rrpp-bridge.exe backup verify backups\BACKUP.db
+```
+
+Run the test suite with:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+For Docker/VPS deployment, encrypted backups, SSH access, and the production Instagram ingress boundary, read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The persistent architecture and security rules are in [docs/agent-guide/](docs/agent-guide/README.md).
