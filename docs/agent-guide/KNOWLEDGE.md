@@ -18,6 +18,22 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-07-16 - OpenClaw is a draft-only provider
+
+- Status: Verified
+- Area: worker and agent generation
+- Fact: The worker can call the local authenticated OpenClaw agent `rrpp` through a replaceable provider contract, validates one structured draft, and converts provider failures into sanitized manual-review escalations. OpenClaw receives bounded context and has no channel credentials or delivery tools.
+- Evidence: ADR-0008, migration 008, `agent_provider.py`, `openclaw_client.py`, worker tests, and the full automated suite.
+- Implication: Agent sophistication may change behind the provider interface, but all outputs remain untrusted intended actions subject to policy, mode suppression, audit, and human review.
+
+### 2026-07-16 - Venue knowledge is explicit and language follows the customer
+
+- Status: Verified
+- Area: dashboard workspace
+- Fact: Each venue stores operator-managed verified knowledge for draft generation. Venue routing still depends only on explicit channel/recipient rules, while the worker sends a language hint and the original message so the provider follows the customer's language and tone.
+- Evidence: migration 008, authenticated venue form, bounded agent context, and provider-context tests.
+- Implication: Do not infer a venue from message text and do not restore a fixed venue-language selector. Unknown or unsupported facts require human review rather than fabrication.
+
 ### 2026-07-16 - Venue identifiers are operator-friendly
 
 - Status: Verified

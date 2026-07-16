@@ -15,6 +15,7 @@ from rrpp_bridge.config import Settings
 from rrpp_bridge.db import connect, initialize
 from rrpp_bridge.executor import Executor
 from rrpp_bridge.instagram_webhook import InstagramWebhookApplication
+from rrpp_bridge.models import IntendedAction
 from rrpp_bridge.runtime import initialize_mode, set_mode
 from rrpp_bridge.workspace import add_route, create_venue
 
@@ -181,6 +182,16 @@ class InstagramWebhookTests(unittest.TestCase):
         conn.close()
 
     def test_exact_account_routing_and_worker_create_review_without_outbound(self):
+        class DraftProvider:
+            provider_id = "fake-openclaw"
+
+            def __init__(self):
+                self.context = None
+
+            def generate_action(self, context):
+                self.context = context
+                return IntendedAction("draft_reply", {"text": "Proposta Instagram"})
+
         conn = connect(self.path)
         venue_id = create_venue(conn, "Sala Instagram", "sala-instagram", "ca", "test")
         add_route(conn, venue_id, "instagram", "ig-business-1", "test")
@@ -188,9 +199,12 @@ class InstagramWebhookTests(unittest.TestCase):
         self.signed_request(payload())
         conn = connect(self.path)
         set_mode(conn, "live", "test")
+        provider = DraftProvider()
         with patch("urllib.request.urlopen") as network:
-            self.assertTrue(Executor(conn).run_once("worker.test"))
+            self.assertTrue(Executor(conn, agent_provider=provider).run_once("worker.test"))
             network.assert_not_called()
+        self.assertEqual(("instagram", "Hola, teniu entrades?"),
+                         (provider.context.channel, provider.context.incoming_message))
         conversation = conn.execute("SELECT venue_id,status FROM conversations").fetchone()
         review = conn.execute(
             "SELECT r.kind,r.status,a.type FROM action_reviews r JOIN actions a ON a.id=r.action_id"

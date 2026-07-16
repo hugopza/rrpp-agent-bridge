@@ -61,8 +61,9 @@ def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: st
 
 
 def create_venue(conn: sqlite3.Connection, name: str, slug: str, language: str,
-                 actor: str) -> str:
+                 actor: str, bot_knowledge: str = "") -> str:
     name, language = name.strip(), language.strip().casefold()
+    bot_knowledge = bot_knowledge.strip()
     slug = _venue_slug(slug or name)
     if not name or len(name) > 120:
         raise ValueError("El nom de la discoteca ha de tenir entre 1 i 120 caràcters")
@@ -70,34 +71,51 @@ def create_venue(conn: sqlite3.Connection, name: str, slug: str, language: str,
         raise ValueError("No s'ha pogut crear un identificador vàlid a partir del nom")
     if language not in {"ca", "es"}:
         raise ValueError("L'idioma de la discoteca ha de ser català o castellà")
+    if len(bot_knowledge) > 20_000:
+        raise ValueError("El coneixement del bot no pot superar els 20000 caracters")
     venue_id, timestamp = _id("ven"), utc_now()
     with transaction(conn, immediate=True):
         existing = conn.execute("SELECT id FROM venues WHERE slug=?", (slug,)).fetchone()
         if existing:
             raise ValueError("Ja existeix una discoteca amb aquest identificador")
         conn.execute(
-            "INSERT INTO venues VALUES(?,?,?,?,1,?,?)",
-            (venue_id, slug, name, language, timestamp, timestamp),
+            "INSERT INTO venues(id,slug,name,default_language,active,created_at,updated_at,bot_knowledge) "
+            "VALUES(?,?,?,?,1,?,?,?)",
+            (venue_id, slug, name, language, timestamp, timestamp, bot_knowledge),
         )
         record(conn, actor, "venue.created", "venue", venue_id, "active",
                {"slug": slug, "language": language})
     return venue_id
 
 
-def update_venue(conn: sqlite3.Connection, venue_id: str, name: str, language: str,
-                 active: bool, actor: str) -> bool:
-    name, language = name.strip(), language.strip().casefold()
-    if not name or len(name) > 120 or language not in {"ca", "es"}:
+def update_venue(conn: sqlite3.Connection, venue_id: str, name: str, language: str | None,
+                 active: bool, actor: str, bot_knowledge: str | None = None) -> bool:
+    name = name.strip()
+    language = language.strip().casefold() if language is not None else None
+    if not name or len(name) > 120 or (language is not None and language not in {"ca", "es"}):
         raise ValueError("Invalid venue name or language")
+    if bot_knowledge is not None:
+        bot_knowledge = bot_knowledge.strip()
+        if len(bot_knowledge) > 20_000:
+            raise ValueError("El coneixement del bot no pot superar els 20000 caracters")
     timestamp = utc_now()
     with transaction(conn, immediate=True):
+        fields, values = ["name=?", "active=?"], [name, int(active)]
+        if language is not None:
+            fields.append("default_language=?")
+            values.append(language)
+        if bot_knowledge is not None:
+            fields.append("bot_knowledge=?")
+            values.append(bot_knowledge)
+        fields.append("updated_at=?")
+        values.extend((timestamp, venue_id))
         changed = conn.execute(
-            "UPDATE venues SET name=?,default_language=?,active=?,updated_at=? WHERE id=?",
-            (name, language, int(active), timestamp, venue_id),
+            f"UPDATE venues SET {','.join(fields)} WHERE id=?", values,
         ).rowcount
         if changed:
+            details = {"language": language} if language is not None else {}
             record(conn, actor, "venue.updated", "venue", venue_id,
-                   "active" if active else "inactive", {"language": language})
+                   "active" if active else "inactive", details)
     return bool(changed)
 
 

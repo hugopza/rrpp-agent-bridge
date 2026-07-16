@@ -16,6 +16,70 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-07-16 - Windows execution policy blocked OpenClaw and local scripts
+
+- Context: Inspecting the installed OpenClaw CLI and securely synchronizing its existing Gateway token into the ignored project environment.
+- Error: PowerShell refused both the npm `openclaw.ps1` wrapper and a repository-local `.ps1` helper because script execution is disabled.
+- Cause: Windows command resolution selected PowerShell scripts while the machine execution policy disallows them.
+- Correction: Invoke OpenClaw through `cmd /c openclaw ...`; run a reviewed local helper with process-scoped `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ...` and never change the machine-wide policy.
+- Prevention: Windows runbooks must use the OpenClaw `.cmd` path and process-scoped bypass only for reviewed repository scripts; never instruct operators to weaken global execution policy.
+
+### 2026-07-16 - OpenClaw agent creation outlived the command timeout
+
+- Context: Creating the isolated `rrpp` agent non-interactively.
+- Error: The CLI returned the successful agent JSON but remained alive long enough for the managed command timeout to report failure.
+- Cause: OpenClaw continued plugin discovery or cleanup after persisting and reporting the agent.
+- Correction: Verify `agents.list` after a timed-out create before retrying; the agent existed and a retry would have duplicated work or failed.
+- Prevention: Treat timed-out stateful CLIs as unknown completion, inspect durable state first, and only retry when the intended object is absent.
+
+### 2026-07-16 - Inline Python SQL quoting failed under PowerShell
+
+- Context: Reading the durable worker instance ID to restart the provider after changing `.env`.
+- Error: Two `python -c` attempts were parsed with broken nested quotes and failed before querying SQLite.
+- Cause: SQL string quoting was composed across PowerShell and Python command-line parsers.
+- Correction: Use a short repository-local ignored script for the query, verify the correlated PID, then remove the script.
+- Prevention: Do not use nested `python -c` for quoted SQL on Windows PowerShell; use an existing CLI or a temporary reviewed script when no SQLite shell command exists.
+
+### 2026-07-16 - Pinned client tool was incompatible with the active model backend
+
+- Context: Real local smoke test of the authenticated OpenClaw Chat Completions endpoint using the `rrpp` agent.
+- Error: The agent generated a valid plain-text proposal, but a function-pinned `tool_choice` caused the endpoint to return `502` because the active ChatGPT backend did not emit the caller-defined function call.
+- Cause: The implementation assumed documented client-tool support behaved uniformly across the configured model transport without testing the actual backend.
+- Correction: Keep the structured `propose_draft` tool as the preferred result, use `tool_choice=auto`, and validate a bounded non-empty assistant-text fallback. Both formats remain pending human review and have no execution capability.
+- Prevention: Smoke-test provider response formats against the configured backend before requiring one transport-specific structured-output mechanism; retain strict size, type, policy, and review boundaries independently of format.
+
+### 2026-07-16 - Batched inspection repeated unverified or optional assumptions
+
+- Context: Reading migrations and test helpers during the OpenClaw provider increment.
+- Error: Grouped read commands referenced migration and test filenames that had not been inventoried, and a later group treated a no-match reference scan as a required success. Each caused the entire grouped result to be discarded; this repeated an error already recorded below.
+- Cause: The batch was assembled from naming assumptions instead of only paths returned by `rg --files`.
+- Correction: Inventory repository paths first, then read only confirmed results; split optional reads so one missing file cannot hide all useful output.
+- Prevention: A batched inspection may contain only previously confirmed paths and commands expected to return zero. Run optional no-match scans separately. This rule applies to tests as well as source and migration files.
+
+### 2026-07-16 - Cross-file patch structure and fragile UI context failed
+
+- Context: Adding venue knowledge and OpenClaw configuration across Python, HTML, and example environment files.
+- Error: One large patch failed on console-encoding context, a second contained an extra space in an HTML route, and another omitted an `Update File` marker between files.
+- Cause: Independent changes were combined into context-sensitive patches without validating every boundary and exact source line.
+- Correction: Reapply changes per file using stable ASCII context, then compile immediately after Python block changes.
+- Prevention: Keep manual patches file-scoped when they touch long server-rendered HTML or non-ASCII text; verify every patch header and copy exact route strings from source.
+
+### 2026-07-16 - Initial OpenClaw tests asserted the wrong stage
+
+- Context: First full-suite run for the OpenClaw increment.
+- Error: A configuration test incorrectly unpacked dictionaries, and a dashboard test expected a per-venue routing selector before any venue existed.
+- Cause: The tests encoded an invalid Python iteration shape and ignored the page lifecycle that controls when the selector is rendered.
+- Correction: Iterate configuration dictionaries directly and fetch the venue page again after creating the venue.
+- Prevention: Run new tests in isolation before the full suite and place UI assertions after the state transition that renders the target control.
+
+### 2026-07-16 - Managed shell denied a temporary log path
+
+- Context: Capturing noisy full-suite output outside the repository.
+- Error: PowerShell could not write the test log to `C:\tmp` even though the orchestration layer advertises a temporary writable root.
+- Cause: The managed PowerShell process and tool-level filesystem permissions expose different path capabilities.
+- Correction: Capture generated logs under the ignored repository `var/` directory.
+- Prevention: Use repository-local ignored paths for shell-generated test output in this workspace, matching the existing smoke-test rule.
+
 ### 2026-07-15 - Windows blocked structured local-port inspection
 
 - Context: Restarting the local Instagram webhook after enabling its configured inbound connector.

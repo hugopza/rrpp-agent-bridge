@@ -10,6 +10,7 @@ The project uses Python 3.12, SQLite, Google OAuth libraries for the read-only G
 - Draft approval marks a response as prepared; it does not send it.
 - Gmail is read-only.
 - Instagram is inbound-only and validates Meta webhook signatures.
+- OpenClaw can generate drafts locally but has no channel-delivery capability.
 - The dashboard stays private on `127.0.0.1:8080`.
 - Inbound text is untrusted data, never operational instruction.
 
@@ -55,6 +56,57 @@ simulator -> event -> job -> worker -> draft -> human review
 Check `Converses`, `Cua de revisió`, `Activitat`, and `Sistema`. In `shadow` mode, every execution remains suppressed and simulated.
 
 `scripts/run-local.ps1` is a convenience command for the dashboard, worker, maintenance, and any locally authorized Gmail poller. It does not start the Instagram webhook. Prefer the separate terminals above while diagnosing or testing connectors.
+
+## OpenClaw draft generation
+
+OpenClaw is optional and replaces the deterministic placeholder as the worker's draft provider. It does not send messages. Every result is schema-validated, passed through policy, stored as a pending draft, and suppressed by `shadow` mode. If the Gateway times out or returns invalid output, the job remains durable and the dashboard receives a manual-review escalation.
+
+The Gateway connection is local, but the configured OpenClaw model may be a remote provider. With ChatGPT/OpenAI, bounded message content and venue context leave the laptop for model processing. Confirm the provider's privacy, retention, and account terms before processing real customer DMs.
+
+OpenClaw also maintains conversation sessions and local logs according to its own configuration. Review their retention and access permissions before production; the bridge audit log deliberately does not copy prompts, message bodies, venue knowledge, or provider responses.
+
+Prerequisites:
+
+1. Run an OpenClaw Gateway only on `127.0.0.1:18789` with token authentication.
+2. Enable its OpenAI-compatible Chat Completions HTTP endpoint.
+3. Create the OpenClaw agent ID `rrpp` and disable its tools and channel delivery.
+4. Use a dedicated random Gateway token; never give OpenClaw Instagram or Gmail credentials.
+
+On this Windows workstation, use the `.cmd` wrapper because PowerShell blocks the npm `.ps1` launcher. Check or start an already configured Gateway with:
+
+```powershell
+cmd /c openclaw gateway status
+cmd /c openclaw gateway run --bind loopback --port 18789 --auth token
+```
+
+Configure the token in OpenClaw's environment or secret configuration before starting it; do not pass a real token on the command line. Create the isolated agent when it does not exist with `cmd /c openclaw agents add rrpp`, then configure that agent with no bindings, `tools.deny=["*"]`, and elevated tools disabled.
+
+Add these values to the ignored `.env`:
+
+```text
+OPENCLAW_ENABLED=true
+OPENCLAW_BASE_URL=http://127.0.0.1:18789
+OPENCLAW_AGENT_ID=rrpp
+OPENCLAW_TIMEOUT_SECONDS=60
+OPENCLAW_GATEWAY_TOKEN=your-local-gateway-token
+```
+
+The Gateway token must match the token configured in OpenClaw. `OPENCLAW_AGENT_NAME=rrpp` is accepted as a compatibility alias, but `OPENCLAW_AGENT_ID` is the canonical key.
+
+After changing these values, migrate once and restart the worker because it selects its provider at process startup:
+
+```powershell
+.\.venv\Scripts\python.exe -m rrpp_bridge migrate
+.\.venv\Scripts\python.exe -m rrpp_bridge worker
+```
+
+In `Discoteques`, fill **Informació verificada per al bot** with confirmed venue facts and configure an exact recipient route. Then submit a simulator message or send an Instagram DM. The expected flow is:
+
+```text
+inbound message -> durable job -> worker -> OpenClaw rrpp -> validated draft -> pending human review
+```
+
+The worker sends bounded recent history and venue knowledge, not channel credentials. An unassigned conversation has no venue knowledge and must not infer a venue from message text.
 
 ## Instagram inbound test
 

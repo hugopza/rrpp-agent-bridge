@@ -38,6 +38,12 @@ Status: Completed on 2026-06-21. The private dashboard now groups events into ch
 
 Status: Completed on 2026-06-21. Worker, Gmail, and maintenance expose durable sanitized heartbeats in the private dashboard. SQLite-native backups are verified, retained as seven daily and three monthly copies, optionally exported with `age`, and restorable only through an offline confirmed CLI flow with a pre-restore safety copy. Docker Compose defines least-privilege web, worker, Gmail, maintenance, and migration services on one host; the dashboard binds to loopback for SSH-tunnel access.
 
+## Local OpenClaw Draft Increment
+
+Status: Completed on 2026-07-16. The worker selects a replaceable agent provider at startup. When enabled, the local authenticated OpenClaw Gateway agent `rrpp` receives bounded conversation context and verified venue knowledge and must return one schema-valid draft for human review. Invalid output, timeout, or transport failure creates a sanitized pending escalation. The dashboard now manages venue knowledge and no longer presents a fixed venue language because replies follow the customer's language and tone. No outbound Instagram or Gmail client was added; `shadow` remains the documented operating mode.
+
+Validation covers local-only configuration, structured response parsing, timeout and HTTP errors, provider failure escalation, venue context and history, simulator and Instagram worker paths, pending review creation, and continued external-execution suppression.
+
 ## Cross-Milestone Quality Gates
 
 - Relevant automated tests pass and failure paths are covered.

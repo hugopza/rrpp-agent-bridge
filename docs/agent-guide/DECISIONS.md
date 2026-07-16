@@ -20,6 +20,7 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 | ADR-0005 | Add operational venues, conversations, and human review | Accepted | 2026-06-21 |
 | ADR-0006 | Operate a private single-host deployment | Accepted | 2026-06-21 |
 | ADR-0007 | Add a signed inbound-only Instagram webhook | Accepted | 2026-07-02 |
+| ADR-0008 | Use OpenClaw as a local draft-generation provider | Accepted | 2026-07-16 |
 
 ## ADR-0001: Persistent Agent Guide
 
@@ -88,6 +89,16 @@ This file indexes architectural decisions. A high-impact decision MUST be docume
 - Alternatives: Adding the route to the dashboard application would risk publishing authenticated operational routes. Accepting unsigned payloads would allow event forgery. Polling, scraping, or browser automation would bypass the official integration and are prohibited.
 - Consequences: Deployment needs a narrow HTTPS reverse-proxy route to the ingress service. Instagram content remains untrusted and drafts require human review. Unsupported webhook event types are acknowledged and audited without creating work.
 - Validation: Tests cover verification, signatures, malformed input, normalization, routing, duplicate delivery, the worker/review flow, and absence of outbound network calls even in live mode.
+
+## ADR-0008: Local OpenClaw Draft Provider
+
+- Status: Accepted
+- Date: 2026-07-16
+- Context: The bridge currently creates deterministic placeholder replies. The owner approved using a local OpenClaw agent named `rrpp` to generate contextual drafts while retaining durable processing, human review, policy enforcement, and the existing no-send boundary.
+- Decision: Introduce an agent-provider interface and an OpenClaw implementation that calls the loopback-only OpenAI-compatible HTTP endpoint with a bounded timeout and authenticated bearer token. Select `openclaw/rrpp`, use one stable session identity per bridge conversation, and send bounded recent history plus explicitly configured venue knowledge as untrusted context. Prefer one schema-validated `propose_draft` tool result; accept a bounded non-empty text result as a compatibility fallback because the installed ChatGPT backend may not emit caller-defined tools. OpenClaw has no Instagram credentials or delivery capability. Every successful proposal remains `pending_approval`; provider unavailability or invalid output creates a sanitized manual-review escalation. The deterministic provider remains the disabled-state fallback.
+- Alternatives: Calling OpenClaw directly from the worker would couple queue processing to one runtime. Using the full WebSocket control protocol adds unnecessary transport complexity. Calling an LLM provider directly would bypass the approved OpenClaw agent workspace. Giving OpenClaw an Instagram channel would bypass bridge policy and audit controls.
+- Consequences: The OpenClaw Chat Completions endpoint must be explicitly enabled on a dedicated loopback Gateway, protected with a token, and the `rrpp` agent must have tools and channel delivery disabled. The Gateway hop is local but a configured remote model provider remains a customer-data egress boundary. Model output remains untrusted and cannot execute actions. The bridge stores no Gateway secret outside environment configuration and never writes prompts, message bodies, venue knowledge, tokens, or raw provider errors to audit records.
+- Validation: Unit tests use fake providers and mocked HTTP transport to cover structured and bounded-text drafts, bounded context, authentication redaction, timeout, HTTP failure, malformed output, manual escalation, simulator and Instagram flows, and continued suppression of all external execution in `shadow` mode.
 
 ## ADR Template
 

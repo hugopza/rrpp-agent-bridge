@@ -92,6 +92,7 @@ The design SHOULD allow later adapters for email, Instagram DM, WhatsApp Busines
 - Editing, approval, rejection, assignment, and resolution MUST be authenticated, CSRF-protected, and audited.
 - Approval marks a draft prepared and MUST NOT send externally.
 - Keep the audit history in the local phase; bound and paginate dashboard views instead of rendering unbounded lists.
+- Use the local OpenClaw `rrpp` agent only to generate response proposals from bounded conversation context and owner-configured venue knowledge. All proposals require human review and OpenClaw has no channel delivery capability.
 
 ## Confirmed Operational Deployment
 

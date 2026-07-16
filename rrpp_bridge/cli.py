@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.request import urlopen
 from wsgiref.simple_server import make_server
 
+from .agent_provider import build_agent_provider
 from .config import Settings
 from .db import backup_database, connect, current_version, initialize, latest_version, prepare_runtime
 from .queue import JobQueue
@@ -184,10 +185,12 @@ def main() -> None:
     start_service(conn, "worker", instance)
     _install_shutdown_handlers()
     last_heartbeat = 0.0
+    agent_provider = build_agent_provider(settings)
     try:
         while True:
             processed = process_one(conn, worker_id, settings.max_attempts,
-                                    settings.lease_seconds, settings.canary_senders)
+                                    settings.lease_seconds, settings.canary_senders,
+                                    agent_provider)
             now = time.monotonic()
             if processed or now - last_heartbeat >= 10:
                 heartbeat(conn, "worker", instance, success=processed,

@@ -6,7 +6,7 @@ The bridge is divided into replaceable components:
 
 1. **Inbound adapters** authenticate or validate channel input and normalize it.
 2. **Event store and job queue** durably accept an event before processing begins.
-3. **Worker/executor** claims jobs and generates explicit intended actions.
+3. **Worker/executor** claims jobs and asks a replaceable agent provider for an explicit intended action.
 4. **Policy layer** produces an auditable decision for every action.
 5. **Action executor** performs only actions permitted by policy and execution mode.
 6. **Audit subsystem** records append-oriented, structured lifecycle facts.
@@ -77,6 +77,8 @@ New channels implement the inbound adapter contract and reuse normalization, per
 
 Instagram uses a separate public ingress process. It verifies the subscription token for GET requests and the raw-body HMAC signature for POST requests before parsing. Only text messages for the configured business account become events. Their channel-native conversation key is the exact recipient/sender pair; venue routing uses the recipient account ID and never message text. Sanitized webhook receipts retain only allowlisted message fields and delivery counts.
 
+Draft generation uses the `AgentProvider` contract. The disabled-state implementation is deterministic; the optional OpenClaw implementation calls only its authenticated loopback Chat Completions endpoint and prefers a single schema-valid `propose_draft` result, with a bounded non-empty text fallback for compatible backends. It receives bounded inbound text, recent conversation history, a language hint, and verified venue knowledge. It receives no connector credentials and cannot dispatch actions. Provider errors become sanitized pending escalations rather than lost jobs or external effects.
+
 The V1 technology stack and persistence choice are accepted in ADR-0002. Future API contracts, horizontal deployment topology, retention periods, and external connectors remain `Proposed` until recorded in `DECISIONS.md`.
 
 ## Implementation Mapping
@@ -85,11 +87,12 @@ The V1 implementation maps each architectural responsibility to an explicit comp
 
 | Architectural responsibility | RRPP V1 component | Implementation boundary |
 | --- | --- | --- |
-| inbound normalization | `rrpp_bridge.adapters` | Channel input becomes a `NormalizedEvent`; only the local adapter exists in V1. |
+| inbound normalization | `rrpp_bridge.adapters` | Local, Gmail, and Instagram input become the same `NormalizedEvent`. |
 | operational workspace | `rrpp_bridge.workspace` | Exact recipient routing, venue administration, conversation lifecycle, and human review transitions. |
 | durable queue | `rrpp_bridge.queue.JobQueue` | Events and jobs are committed together; channel message IDs provide idempotency. |
 | conversation concurrency | job `work_key` | Related conversations serialize while unrelated conversations may proceed independently. |
 | policy evaluation | `rrpp_bridge.policy.Policy` | Policy evaluates explicit intended actions and unknown actions fail closed. |
+| agent generation | `rrpp_bridge.agent_provider` and `rrpp_bridge.openclaw_client` | A provider creates an intended action; OpenClaw is loopback-only, bounded, authenticated, and response-validated. |
 | worker execution | `rrpp_bridge.executor.Executor` | Claims durable jobs and records actions; external dispatch is intentionally absent in V1. |
 | audit trail | `audit_log` through `rrpp_bridge.audit` | Lifecycle, decisions, errors, and operator operations use correlated structured entries. |
 | operations and recovery | `rrpp_bridge.operations` | Sanitized service heartbeats, verified backup/retention, optional `age` export, health evaluation, and offline restore. |
@@ -98,7 +101,7 @@ The V1 implementation maps each architectural responsibility to an explicit comp
 
 SQLite changes are applied through ordered, packaged migrations. Jobs use expiring leases, bounded exponential retry delays, and a terminal dead-letter state. Operators may retry or dismiss terminal jobs through authenticated, audited controls.
 
-An RRPP worker first creates an explicit intended action, then policy decides that action, and only a future external executor may dispatch it.
+An RRPP worker obtains an explicit intended action from its configured provider, then policy decides that action, and only a future external executor may dispatch it. The current executor has no Instagram, Gmail, or other external sending implementation.
 
 Events attach to a channel-scoped conversation inside the same durable ingestion transaction. Routing is evaluated after normalization and uses only configured channel and recipient identities. A resolved conversation reopens on a new event. Drafts and escalations create review records; draft text revisions are operational records, while audit entries contain only identifiers, states, and versions.
 
