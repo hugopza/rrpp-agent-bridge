@@ -183,3 +183,11 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Cause: The dashboard required an implementation detail from the operator and relied on native pattern validation without explaining it in the UI.
 - Correction: The identifier is now optional and derived safely from the venue name; supplied labels are normalized, and the form explains the resulting value.
 - Prevention: Dashboard forms must use operator-facing labels and defaults. Generate technical identifiers from human input where possible, and test the browser-facing form contract as well as server validation.
+
+### 2026-07-16 - Sandbox blocked public webhook round-trip validation
+
+- Context: Diagnosing an active local Instagram webhook and Cloudflare quick tunnel.
+- Error: The sandboxed Python process received `WinError 10013` when it attempted an HTTPS request to the public tunnel hostname.
+- Cause: The managed execution environment restricts outbound sockets even though the local webhook and Cloudflare metrics endpoints are reachable.
+- Correction: Repeat the non-mutating public verification through the approved elevated network command; it returned `200` with the expected challenge.
+- Prevention: Treat a sandbox socket-denied error as an environment limitation, not a connector failure. Use the approved network path for public round-trip diagnostics and never print verification tokens.
