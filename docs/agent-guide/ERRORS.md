@@ -16,6 +16,14 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-07-29 - Disabled Gateway task and partial OpenClaw update blocked the dashboard
+
+- Context: Starting only the local OpenClaw Control UI after the project services had been stopped.
+- Error: `openclaw dashboard` could not start the disabled `OpenClaw Gateway` scheduled task. After the task was enabled, the Gateway still exited because the global OpenClaw installation referenced a missing generated `dist` module; leftover update-runner processes then caused `npm install -g openclaw@latest` to fail with `EBUSY`.
+- Cause: The Windows scheduled task had been disabled during shutdown, and an interrupted or incomplete package update left the installed CLI code inconsistent while orphaned OpenClaw Node processes kept its directory locked.
+- Correction: Query and enable only the `OpenClaw Gateway` task, stop only processes whose command line belongs to OpenClaw, reinstall the stable global npm package, run `cmd /c openclaw gateway install --force --port 18789`, start the managed Gateway, and verify with `cmd /c openclaw gateway status --deep` that CLI and Gateway versions match, connectivity succeeds, and `127.0.0.1:18789` is listening.
+- Prevention: After an OpenClaw update, restart, or dashboard-start failure, do not repeatedly relaunch the dashboard. Check the scheduled task and `gateway status --deep` first. A missing generated `dist` module requires stopping the OpenClaw process tree before reinstalling the package and refreshing the scheduled task. Keep the Gateway loopback-only and continue using `cmd /c openclaw ...` on this machine.
+
 ### 2026-07-16 - Random IDs were used to break equal message timestamps
 
 - Context: Invalidating an OpenClaw response when a newer inbound message arrives during generation.
