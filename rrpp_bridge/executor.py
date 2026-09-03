@@ -5,9 +5,15 @@ import sqlite3
 import uuid
 
 from .action_executor import LocalActionExecutor
-from .agent_provider import (AgentContext, AgentProvider, AgentProviderError, ConversationTurn,
-                             DeterministicAgentProvider, detect_language_hint,
-                             legacy_action_to_decision)
+from .agent_provider import (
+    AgentContext,
+    AgentProvider,
+    AgentProviderError,
+    ConversationTurn,
+    DeterministicAgentProvider,
+    detect_language_hint,
+    legacy_action_to_decision,
+)
 from .audit import record, utc_now
 from .catalog import load_snapshot
 from .db import transaction
@@ -56,7 +62,7 @@ class Executor:
         history_rows = self.conn.execute(
             "SELECT direction,author_type,body_text,created_at FROM conversation_messages "
             "WHERE conversation_id=? AND source_event_id IS NOT ? "
-            "ORDER BY created_at DESC,id DESC LIMIT 12",
+            "ORDER BY rowid DESC LIMIT 12",
             (workspace["conversation_id"], event["id"]),
         ).fetchall()
         history = tuple(

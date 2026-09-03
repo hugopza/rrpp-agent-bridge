@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -60,6 +59,12 @@ class ProductionDeploymentTests(unittest.TestCase):
             "OPENCLAW_GATEWAY_TOKEN",
         ):
             self.assertIn(f"{key}=\n", environment)
+        self.assertNotIn("RRPP_VENUE_KNOWLEDGE_DIR", environment)
+
+    def test_local_template_also_fails_closed_without_default_credentials(self):
+        environment = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn("RRPP_DASHBOARD_PASSWORD=\n", environment)
+        self.assertIn("RRPP_SESSION_SECRET=\n", environment)
 
 
 if __name__ == "__main__":

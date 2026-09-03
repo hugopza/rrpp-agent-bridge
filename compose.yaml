@@ -6,7 +6,6 @@ x-rrpp-service: &rrpp-service
     RRPP_DATABASE_PATH: /app/var/rrpp-bridge.db
     RRPP_BACKUP_DIR: /app/backups
     RRPP_BACKUP_EXPORT_DIR: /app/backup-export
-    RRPP_VENUE_KNOWLEDGE_DIR: /app/knowledge/venues
   restart: unless-stopped
   init: true
   read_only: true
@@ -21,7 +20,6 @@ x-rrpp-service: &rrpp-service
     - ./var:/app/var
     - ./backups:/app/backups
     - ./backup-export:/app/backup-export
-    - ./knowledge:/app/knowledge:ro
 
 services:
   web:

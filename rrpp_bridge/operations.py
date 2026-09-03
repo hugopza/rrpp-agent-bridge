@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -15,7 +16,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .audit import record, utc_now
-from .db import connect, current_version, latest_version, transaction
+from .db import connect, current_version, initialize, latest_version, transaction
+from .runtime_lock import DatabaseRuntimeLock
 
 SERVICES = frozenset({"worker", "maintenance"})
 BACKUP_KINDS = frozenset({"manual", "daily", "monthly", "pre_restore"})
@@ -109,7 +111,7 @@ class BackupInfo:
     encrypted_path: Path | None = None
 
 
-def verify_backup(path: Path) -> BackupInfo:
+def verify_backup(path: Path, *, require_current_schema: bool = False) -> BackupInfo:
     path = Path(path).resolve()
     if not path.is_file():
         raise ValueError("Backup file not found")
@@ -122,7 +124,9 @@ def verify_backup(path: Path) -> BackupInfo:
         conn.close()
     if integrity != "ok":
         raise ValueError("Backup integrity check failed")
-    if version != latest_version():
+    if version < 1 or version > latest_version():
+        raise ValueError(f"Backup schema {version} is not supported by this release")
+    if require_current_schema and version != latest_version():
         raise ValueError(f"Backup schema {version} does not match expected schema {latest_version()}")
     return BackupInfo(path, "manual", path.stat().st_size, _sha256(path))
 
@@ -131,9 +135,12 @@ def _encrypt_age(source: Path, export_dir: Path, recipient: str) -> Path:
     export_dir.mkdir(parents=True, exist_ok=True)
     target = export_dir / f"{source.name}.age"
     temporary = target.with_suffix(target.suffix + ".tmp")
+    age_binary = shutil.which("age")
+    if not age_binary:
+        raise RuntimeError("Encrypted backup export requires age")
     try:
         subprocess.run(
-            ["age", "--recipient", recipient, "--output", str(temporary), str(source)],
+            [age_binary, "--recipient", recipient, "--output", str(temporary), str(source)],
             check=True, capture_output=True, text=True,
         )
         temporary.replace(target)
@@ -164,7 +171,7 @@ def create_backup(database_path: Path, backup_dir: Path, kind: str = "manual", *
     temporary.replace(target)
     verification_error: Exception | None = None
     try:
-        checked = verify_backup(target)
+        checked = verify_backup(target, require_current_schema=True)
         integrity_status = "verified"
     except Exception as exc:
         verification_error = exc
@@ -224,9 +231,13 @@ def apply_retention(database_path: Path, backup_dir: Path, export_dir: Path | No
 
 
 def _decrypt_age(source: Path, identity: Path, target: Path) -> None:
+    age_binary = shutil.which("age")
+    if not age_binary:
+        raise RuntimeError("Encrypted backup decryption requires age")
     try:
         subprocess.run(
-            ["age", "--decrypt", "--identity", str(identity), "--output", str(target), str(source)],
+            [age_binary, "--decrypt", "--identity", str(identity), "--output", str(target),
+             str(source)],
             check=True, capture_output=True, text=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -238,6 +249,14 @@ def restore_backup(database_path: Path, backup_path: Path, backup_dir: Path, *,
     if confirmation != "RESTORE":
         raise PermissionError("Restore requires literal confirmation RESTORE")
     database_path, backup_path = Path(database_path), Path(backup_path)
+    with DatabaseRuntimeLock(database_path, exclusive=True, blocking=False):
+        return _restore_backup_locked(
+            database_path, backup_path, Path(backup_dir), identity=identity
+        )
+
+
+def _restore_backup_locked(database_path: Path, backup_path: Path, backup_dir: Path, *,
+                           identity: Path | None = None) -> Path:
     conn = connect(database_path)
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
@@ -270,7 +289,12 @@ def restore_backup(database_path: Path, backup_path: Path, backup_dir: Path, *,
             target_conn.close()
             source_conn.close()
         try:
-            verify_backup(database_path)
+            migrated = connect(database_path)
+            try:
+                initialize(migrated)
+            finally:
+                migrated.close()
+            verify_backup(database_path, require_current_schema=True)
         except Exception:
             rollback_source = sqlite3.connect(safety.path)
             rollback_target = sqlite3.connect(database_path)
@@ -297,10 +321,34 @@ def restore_backup(database_path: Path, backup_path: Path, backup_dir: Path, *,
             decrypted.unlink(missing_ok=True)
 
 
+def retry_pending_exports(conn: sqlite3.Connection, backup_dir: Path, export_dir: Path,
+                          recipient: str) -> int:
+    if not recipient:
+        return 0
+    exported = 0
+    rows = conn.execute(
+        "SELECT id,filename FROM backup_records WHERE integrity_status='verified' "
+        "AND encrypted_export=0 AND kind IN ('daily','monthly') ORDER BY created_at"
+    ).fetchall()
+    for row in rows:
+        source = Path(backup_dir) / str(row["filename"])
+        if not source.is_file():
+            raise RuntimeError("Verified backup awaiting export is missing")
+        encrypted = _encrypt_age(source, Path(export_dir), recipient)
+        with transaction(conn, immediate=True):
+            conn.execute(
+                "UPDATE backup_records SET encrypted_export=1 WHERE id=?", (row["id"],)
+            )
+            record(conn, "maintenance", "backup.exported", "backup", row["id"], "encrypted",
+                   {"filename": source.name, "encrypted_filename": encrypted.name})
+        exported += 1
+    return exported
+
+
 def _backup_due(conn: sqlite3.Connection, kind: str, local_now: datetime) -> bool:
     row = conn.execute(
-        "SELECT created_at FROM backup_records WHERE kind=? ORDER BY created_at DESC LIMIT 1",
-        (kind,),
+        "SELECT created_at FROM backup_records WHERE kind=? AND integrity_status='verified' "
+        "ORDER BY created_at DESC LIMIT 1", (kind,),
     ).fetchone()
     if not row:
         return True
@@ -309,15 +357,29 @@ def _backup_due(conn: sqlite3.Connection, kind: str, local_now: datetime) -> boo
 
 
 def run_maintenance(settings, *, once: bool = False) -> None:
-    conn = connect(settings.database_path)
-    instance = instance_id("maintenance")
-    start_service(conn, "maintenance", instance)
+    runtime_lock = DatabaseRuntimeLock(settings.database_path, exclusive=False)
+    conn: sqlite3.Connection | None = None
+    started = False
     try:
+        conn = connect(settings.database_path)
+        instance = instance_id("maintenance")
+        start_service(conn, "maintenance", instance)
+        started = True
         while True:
             local_now = datetime.now(ZoneInfo(settings.backup_timezone))
             heartbeat(conn, "maintenance", instance)
             if once or local_now.hour >= settings.backup_hour:
                 try:
+                    pending_export_error: Exception | None = None
+                    try:
+                        retry_pending_exports(
+                            conn,
+                            settings.backup_dir,
+                            settings.backup_export_dir,
+                            settings.backup_age_recipient,
+                        )
+                    except Exception as exc:
+                        pending_export_error = exc
                     kind = "monthly" if _backup_due(conn, "monthly", local_now) else "daily"
                     if once or _backup_due(conn, kind, local_now):
                         info = create_backup(
@@ -329,6 +391,8 @@ def run_maintenance(settings, *, once: bool = False) -> None:
                                         settings.backup_export_dir)
                         heartbeat(conn, "maintenance", instance, success=True,
                                   details={"backup": info.path.name, "kind": kind})
+                    if pending_export_error is not None:
+                        raise RuntimeError("Pending encrypted backup export failed") from pending_export_error
                 except Exception as exc:
                     heartbeat(conn, "maintenance", instance, error=exc)
                     if once:
@@ -337,5 +401,8 @@ def run_maintenance(settings, *, once: bool = False) -> None:
                 return
             time.sleep(30)
     finally:
-        stop_service(conn, "maintenance", instance)
-        conn.close()
+        if conn is not None:
+            if started:
+                stop_service(conn, "maintenance", instance)
+            conn.close()
+        runtime_lock.close()

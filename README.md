@@ -42,6 +42,9 @@ Copy-Item .env.example .env
 
 No sobreescriguis un `.env` existent. `.env`, tokens i credencials estan ignorats
 per Git i no s'han de publicar ni enganxar en documentacio.
+Abans d'arrencar el dashboard, assigna a `.env` una contrasenya i un secret de
+sessió aleatoris i diferents; la plantilla els deixa buits perquè la configuració
+incompleta falli de manera segura.
 
 ## Configuracio
 
@@ -216,6 +219,16 @@ del text del client.
 .\.venv\Scripts\rrpp-bridge.exe backup create --kind manual
 .\.venv\Scripts\rrpp-bridge.exe backup verify backups\BACKUP.db
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Per executar localment les mateixes portes de qualitat que CI:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[deployment,quality]"
+.\.venv\Scripts\ruff.exe check rrpp_bridge tests
+.\.venv\Scripts\python.exe -m mypy rrpp_bridge
+.\.venv\Scripts\python.exe -m bandit -q -r rrpp_bridge -s B404,B603
+.\.venv\Scripts\python.exe -m build
 ```
 
 `scripts/run-local.ps1` inicia dashboard, worker i manteniment. El webhook i el tunel

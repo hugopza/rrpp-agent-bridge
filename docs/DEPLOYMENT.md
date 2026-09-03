@@ -73,7 +73,7 @@ sudo useradd --uid 10001 --gid 10001 --shell /usr/sbin/nologin \
 sudo git clone REPOSITORY_URL /opt/rrpp-agent-bridge
 cd /opt/rrpp-agent-bridge
 sudo install -d -o rrpp -g rrpp -m 0750 \
-  var backups backup-export knowledge knowledge/venues
+  var backups backup-export
 sudo python3.12 -m venv .venv
 sudo .venv/bin/python -m pip install -e '.[deployment]'
 ```
@@ -251,7 +251,10 @@ Només 22 (restringit), 80 i 443 han d'escoltar en interfícies públiques. 8080
 
 Maintenance crea backups amb l'API online de SQLite, en verifica la integritat i
 reté set còpies diàries i tres mensuals. Amb `RRPP_BACKUP_AGE_RECIPIENT`, cada
-backup genera també un `.age` a `backup-export/`.
+backup genera també un `.age` a `backup-export/`. Si l'exportació xifrada falla,
+el backup local verificat es conserva i maintenance torna a intentar exportar el
+mateix fitxer abans de crear la còpia programada següent. Revisa l'alerta de
+maintenance al dashboard: una còpia local pendent encara no és una còpia off-host.
 
 Configura un job extern independent perquè copiï els `.age` a un segon
 proveïdor o compte (Storage Box, object storage o servidor de backup). Usa
@@ -288,7 +291,11 @@ sudo bash scripts/deploy.sh
 Si la font és `.age`, desxifra-la fora del VPS o passa `--identity` només
 durant una recuperació controlada; elimina després la identitat del servidor. El
 restore crea una còpia pre-restore, verifica la font i comprova la integritat de
-la base restaurada abans d'acabar.
+la base restaurada abans d'acabar. A Linux, web, ingress, worker i maintenance
+mantenen un lock compartit de cicle de vida; restore exigeix el lock exclusiu i
+falla si algun procés continua actiu. Els backups d'una versió d'esquema anterior
+encara suportada es migren automàticament amb el codi instal·lat i després es
+tornen a verificar abans de reiniciar els serveis.
 
 ## 10. Operació habitual
 

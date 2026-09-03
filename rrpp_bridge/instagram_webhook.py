@@ -13,6 +13,7 @@ from .config import Settings
 from .db import connect, prepare_runtime, transaction
 from .queue import JobQueue
 from .runtime import initialize_mode
+from .runtime_lock import DatabaseRuntimeLock
 
 MAX_BODY_BYTES = 262_144
 
@@ -20,12 +21,17 @@ MAX_BODY_BYTES = 262_144
 class InstagramWebhookApplication:
     def __init__(self, settings: Settings):
         self.settings = settings
-        conn = connect(settings.database_path)
+        self._runtime_lock = DatabaseRuntimeLock(settings.database_path, exclusive=False)
         try:
-            prepare_runtime(conn)
-            initialize_mode(conn, settings.mode)
-        finally:
-            conn.close()
+            conn = connect(settings.database_path)
+            try:
+                prepare_runtime(conn)
+                initialize_mode(conn, settings.mode)
+            finally:
+                conn.close()
+        except Exception:
+            self._runtime_lock.close()
+            raise
 
     @staticmethod
     def _respond(start_response, status: str, body: str = "", content_type: str = "text/plain; charset=utf-8"):

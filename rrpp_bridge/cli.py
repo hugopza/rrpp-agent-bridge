@@ -10,14 +10,31 @@ from urllib.request import urlopen
 from wsgiref.simple_server import make_server
 
 from .agent_provider import AgentContext, AgentProviderError, build_agent_provider
-from .config import Settings, VALID_MODES, load_local_env
-from .db import backup_database, connect, current_version, initialize, latest_version, prepare_runtime
-from .queue import JobQueue
+from .config import VALID_MODES, Settings, load_local_env
+from .db import (
+    backup_database,
+    connect,
+    current_version,
+    initialize,
+    latest_version,
+    prepare_runtime,
+)
 from .instagram_sender import build_instagram_senders
-from .operations import (create_backup, instance_id, restore_backup, run_maintenance,
-                         SERVICES, service_health, start_service, stop_service, verify_backup,
-                         heartbeat)
+from .operations import (
+    SERVICES,
+    create_backup,
+    heartbeat,
+    instance_id,
+    restore_backup,
+    run_maintenance,
+    service_health,
+    start_service,
+    stop_service,
+    verify_backup,
+)
+from .queue import JobQueue
 from .runtime import get_mode, initialize_mode, set_mode
+from .runtime_lock import DatabaseRuntimeLock
 from .service import process_one
 from .web import Application
 
@@ -58,8 +75,8 @@ def main() -> None:
     worker.add_argument("--once", action="store_true")
     maintenance = sub.add_parser("maintenance")
     maintenance.add_argument("--once", action="store_true")
-    backup = sub.add_parser("backup")
-    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    backup_parser = sub.add_parser("backup")
+    backup_sub = backup_parser.add_subparsers(dest="backup_command", required=True)
     backup_create = backup_sub.add_parser("create")
     backup_create.add_argument("--kind", choices=("manual", "daily", "monthly"), default="manual")
     backup_verify = backup_sub.add_parser("verify")
@@ -118,12 +135,24 @@ def main() -> None:
     if args.command == "migrate":
         existed = settings.database_path.exists()
         conn = connect(settings.database_path)
-        backup = (backup_database(settings.database_path)
-                  if existed and current_version(conn) < latest_version() else None)
-        applied = initialize(conn)
-        initialize_mode(conn, settings.mode)
-        print(json.dumps({"applied": applied, "backup": str(backup) if backup else None}))
-        conn.close()
+        try:
+            migration_backup = (
+                backup_database(settings.database_path)
+                if existed and current_version(conn) < latest_version()
+                else None
+            )
+            applied = initialize(conn)
+            initialize_mode(conn, settings.mode)
+            print(
+                json.dumps(
+                    {
+                        "applied": applied,
+                        "backup": str(migration_backup) if migration_backup else None,
+                    }
+                )
+            )
+        finally:
+            conn.close()
         return
 
     conn = _prepare(settings)
@@ -132,7 +161,8 @@ def main() -> None:
             port = settings.port if args.service == "web" else settings.instagram_port
             path = "/login" if args.service == "web" else "/healthz"
             try:
-                with urlopen(f"http://127.0.0.1:{port}{path}", timeout=3) as response:
+                # The scheme and host are fixed; only validated local ports are interpolated.
+                with urlopen(f"http://127.0.0.1:{port}{path}", timeout=3) as response:  # nosec B310
                     healthy = response.status == 200
             except OSError:
                 healthy = False
@@ -146,6 +176,7 @@ def main() -> None:
         raise SystemExit(0 if healthy else 1)
     if args.command == "init-db":
         print(f"Initialized {settings.database_path} at schema version {current_version(conn)}")
+        conn.close()
         return
     if args.command == "status":
         counts = {row["state"]: row["count"] for row in conn.execute(
@@ -158,14 +189,17 @@ def main() -> None:
         print(json.dumps({"database": str(settings.database_path), "schema": current_version(conn),
                           "mode": get_mode(conn), "jobs": counts, "services": services,
                           "instances": instances}, sort_keys=True))
+        conn.close()
         return
     if args.command == "set-mode":
         set_mode(conn, args.mode, "cli")
         print(json.dumps({"mode": get_mode(conn)}))
+        conn.close()
         return
     if args.command == "recover-stale":
         recovered = JobQueue(conn).recover_stale(settings.max_attempts, "cli.recover-stale")
         print(json.dumps({"recovered": recovered}))
+        conn.close()
         return
     if args.command == "web":
         conn.close()
@@ -177,9 +211,9 @@ def main() -> None:
     if args.command == "instagram-webhook":
         from .instagram_webhook import InstagramWebhookApplication
         conn.close()
-        app = InstagramWebhookApplication(settings)
+        instagram_app = InstagramWebhookApplication(settings)
         print(f"Instagram webhook listening on http://{settings.host}:{settings.instagram_port}")
-        with make_server(settings.host, settings.instagram_port, app) as server:
+        with make_server(settings.host, settings.instagram_port, instagram_app) as server:
             server.serve_forever()
         return
     if args.command == "maintenance":
@@ -192,30 +226,36 @@ def main() -> None:
         return
     worker_id = f"worker.{socket.gethostname()}"
     instance = instance_id("worker")
-    start_service(conn, "worker", instance)
     _install_shutdown_handlers()
     last_heartbeat = 0.0
-    agent_provider = build_agent_provider(settings)
-    instagram_senders = build_instagram_senders(settings)
+    runtime_lock: DatabaseRuntimeLock | None = None
     try:
-        while True:
-            processed = process_one(conn, worker_id, settings.max_attempts,
-                                    settings.lease_seconds, settings.canary_senders,
-                                    agent_provider, instagram_senders)
-            now = time.monotonic()
-            if processed or now - last_heartbeat >= 10:
-                heartbeat(conn, "worker", instance, success=processed,
-                          details={"processed": bool(processed)})
-                last_heartbeat = now
-            if args.once:
-                break
-            if not processed:
-                time.sleep(1)
-    except GracefulShutdown:
-        pass
+        runtime_lock = DatabaseRuntimeLock(settings.database_path, exclusive=False)
+        agent_provider = build_agent_provider(settings)
+        instagram_senders = build_instagram_senders(settings)
+        start_service(conn, "worker", instance)
+        try:
+            while True:
+                processed = process_one(conn, worker_id, settings.max_attempts,
+                                        settings.lease_seconds, settings.canary_senders,
+                                        agent_provider, instagram_senders)
+                now = time.monotonic()
+                if processed or now - last_heartbeat >= 10:
+                    heartbeat(conn, "worker", instance, success=processed,
+                              details={"processed": bool(processed)})
+                    last_heartbeat = now
+                if args.once:
+                    break
+                if not processed:
+                    time.sleep(1)
+        except GracefulShutdown:
+            pass
+        finally:
+            stop_service(conn, "worker", instance)
     finally:
-        stop_service(conn, "worker", instance)
         conn.close()
+        if runtime_lock is not None:
+            runtime_lock.close()
 
 
 if __name__ == "__main__":

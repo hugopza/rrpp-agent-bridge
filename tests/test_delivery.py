@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
-import json
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
@@ -11,8 +11,12 @@ from rrpp_bridge.config import InstagramAccountSettings, Settings
 from rrpp_bridge.db import connect, initialize
 from rrpp_bridge.delivery import create_human_reply
 from rrpp_bridge.executor import Executor
-from rrpp_bridge.instagram_sender import (InstagramSendError, InstagramSendResult,
-                                           InstagramSender, build_instagram_senders)
+from rrpp_bridge.instagram_sender import (
+    InstagramSender,
+    InstagramSendError,
+    InstagramSendResult,
+    build_instagram_senders,
+)
 from rrpp_bridge.models import AgentDecision, NormalizedEvent
 from rrpp_bridge.queue import JobQueue
 from rrpp_bridge.runtime import initialize_mode, set_mode

@@ -165,6 +165,7 @@ class OpenClawWorkerTests(unittest.TestCase):
 
     def test_worker_passes_catalog_and_history_then_creates_read_only_draft(self):
         create_venue(self.conn, "Sala Test", "sala-test", "ca", "test", "Obrim a les 23:00")
+        create_venue(self.conn, "Sala Global", "sala-global", "ca", "test", "Obrim a les 22:00")
         ingest_local(self.conn, self.payload("m-1", "Hola"))
         Executor(self.conn).run_once("worker.first")
         ingest_local(self.conn, self.payload("m-2", "Gracies"))
@@ -172,7 +173,10 @@ class OpenClawWorkerTests(unittest.TestCase):
         self.assertTrue(Executor(self.conn, agent_provider=provider).run_once("worker.openclaw"))
         value = provider.contexts[0]
         self.assertEqual("Hola", value.history[-1].body_text)
-        self.assertEqual("Sala Test", value.catalog_items[0].data["name"])
+        self.assertEqual(
+            {"Sala Global", "Sala Test"},
+            {item.data["name"] for item in value.catalog_items if item.type == "venue"},
+        )
         review = self.conn.execute(
             "SELECT r.kind,r.status,r.current_text,a.type FROM action_reviews r "
             "JOIN actions a ON a.id=r.action_id ORDER BY r.rowid DESC LIMIT 1"

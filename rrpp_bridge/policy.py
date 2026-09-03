@@ -51,7 +51,7 @@ RESTRICTED_OPERATION_PATTERNS = tuple(map(re.compile, (
     r"\b(?:fes|processa|tramita)(?: me| m)? (?:un |una |el |la )?"
     r"(?:refund|reembolso|devolucio|devolucion)\b",
     r"\b(?:devuelveme|reembolsame|refund me)\b",
-    r"\b(?:cobra m|cobrame|charge me|process (?:my )?payment)\b",
+    r"\b(?:cobra m|cobrame|cobame|charge me|process (?:my )?payment)\b",
 )))
 CREDENTIAL_PATTERNS = tuple(map(re.compile, (
     r"\b(?:el meu|la meva|mi|mis|my) "
@@ -70,7 +70,8 @@ PROHIBITED_OUTBOUND_PATTERNS = tuple(map(re.compile, (
     r"(?:confirmat|confirmado|confirmed|processat|procesado|processed|fet|hecho|done)\b",
     r"\b(?:refund|reembolso|devolucio|devolucion) (?:esta |is |has been )?"
     r"(?:confirmat|confirmado|confirmed|processat|procesado|processed|issued|fet|hecho|done)\b",
-    r"\b(?:envia|enviam|facilita|dona|send|provide)(?: me| m)?(?: el| la| teu| teva| your| the)? "
+    r"\b(?:envia|enviam|facilita|dona|send|provide)(?: me| m)?"
+    r"(?: (?:el|la|els|les|un|una|teu|teva|meu|meva|tu|tus|mi|mis|your|the))* "
     r"(?:dni|passaport|pasaporte|passport|targeta|tarjeta|card|cvv|pin)\b",
 )))
 

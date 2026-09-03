@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from .audit import record, utc_now
 from .db import transaction
-from .instagram_sender import InstagramSendError, InstagramSender
+from .instagram_sender import InstagramSender, InstagramSendError
 from .runtime import get_mode
 from .workspace import create_review
 
@@ -61,7 +61,7 @@ def create_human_reply(conn: sqlite3.Connection, conversation_id: str, text: str
             "JOIN receiver_accounts ra ON ra.id=c.receiver_account_id "
             "JOIN events e ON e.conversation_id=c.id "
             "JOIN jobs j ON j.event_id=e.id WHERE c.id=? "
-            "ORDER BY e.received_at DESC,e.id DESC LIMIT 1", (conversation_id,),
+            "ORDER BY e.rowid DESC LIMIT 1", (conversation_id,),
         ).fetchone()
         if not context or context["channel"] != "instagram":
             raise ValueError("La conversa no admet enviament per Instagram")
@@ -131,7 +131,7 @@ class DeliveryExecutor:
         with transaction(self.conn, immediate=True):
             row = self.conn.execute(
                 "SELECT * FROM deliveries WHERE status='pending' AND available_at<=? "
-                "ORDER BY created_at,id LIMIT 1", (timestamp,),
+                "ORDER BY rowid LIMIT 1", (timestamp,),
             ).fetchone()
             if not row:
                 return None

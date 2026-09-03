@@ -6,10 +6,10 @@ import re
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlencode
 
 from rrpp_bridge.action_executor import decide_execution
@@ -20,8 +20,13 @@ from rrpp_bridge.queue import JobQueue
 from rrpp_bridge.runtime import get_mode, initialize_mode, set_mode
 from rrpp_bridge.service import ingest_local, process_one
 from rrpp_bridge.web import Application
-from rrpp_bridge.workspace import (add_route, create_venue, edit_review,
-                                   set_conversation_status, transition_review)
+from rrpp_bridge.workspace import (
+    add_route,
+    create_venue,
+    edit_review,
+    set_conversation_status,
+    transition_review,
+)
 
 
 class BridgeTests(unittest.TestCase):
@@ -273,6 +278,22 @@ class MigrationTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_account_catalog_migration_clears_historical_venue_assignment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "schema-nine.db")
+            try:
+                initialize(conn)
+                venue_id = create_venue(conn, "Sala Antiga", "sala-antiga", "ca", "test")
+                ingest_local(conn, BridgeTests.payload("legacy-route"))
+                conn.execute("UPDATE conversations SET venue_id=?", (venue_id,))
+                conn.execute("DELETE FROM schema_migrations WHERE version=10")
+                self.assertEqual([10], initialize(conn))
+                self.assertIsNone(conn.execute(
+                    "SELECT venue_id FROM conversations"
+                ).fetchone()[0])
+            finally:
+                conn.close()
+
 
 class ConfigTests(unittest.TestCase):
     def test_local_env_loads_only_rrpp_keys_without_overriding_process(self):
@@ -289,6 +310,13 @@ class ConfigTests(unittest.TestCase):
             path = Path(tmp) / ".env"
             path.write_text("UNSAFE_KEY=value\n", encoding="utf-8")
             with self.assertRaises(ValueError):
+                load_local_env(path)
+
+    def test_local_env_rejects_misspelled_rrpp_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("RRPP_BACKUP_AGE_RECIEPIENT=value\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Invalid .env key"):
                 load_local_env(path)
 
     def test_backup_timezone_is_validated(self):
@@ -450,7 +478,9 @@ class WebTests(unittest.TestCase):
         self.assertEqual("200 OK", updated_page["status"])
         self.assertIn("Esdeveniments i ofertes", venues_page)
         conn = connect(self.path)
-        venue_id = conn.execute("SELECT id FROM venues WHERE slug='sala-nord'").fetchone()[0]
+        self.assertIsNotNone(
+            conn.execute("SELECT id FROM venues WHERE slug='sala-nord'").fetchone()
+        )
         conn.close()
         simulate = urlencode({"csrf": csrf, **BridgeTests.payload("review-web")})
         self.request("/simulate", "POST", simulate, cookie)

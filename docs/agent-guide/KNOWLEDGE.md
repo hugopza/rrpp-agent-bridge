@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-09-03 - Account/catalog and recovery invariants are enforced
+
+- Status: Verified
+- Area: conversation model, backups, and process lifecycle
+- Fact: Conversations remain account/customer scoped with no active venue assignment, every agent request receives the bounded global catalog, failed encrypted backup exports are retried from their verified local copy, and Linux restore excludes running bridge processes before migrating and re-verifying supported older schemas.
+- Evidence: migration 010, workspace/catalog/operations/runtime-lock implementations, and regression tests.
+- Implication: Do not restore venue routing or venue-specific prompt files. Keep restore offline, retain failed-export metadata, and test upgrades from supported backup schemas.
+
 ### 2026-09-03 - Ubuntu production keeps the worker on the host
 
 - Status: Verified

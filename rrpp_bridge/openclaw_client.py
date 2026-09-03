@@ -162,7 +162,7 @@ class OpenClawAgentProvider:
                     structured = True
                 except json.JSONDecodeError:
                     if len(content) > MAX_REPLY_CHARACTERS:
-                        raise ValueError
+                        raise ValueError from None
                     return AgentDecision(
                         "human_required", content, "unknown",
                         "unstructured_provider_output", structured=False,

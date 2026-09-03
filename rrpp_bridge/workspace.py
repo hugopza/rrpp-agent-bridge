@@ -22,15 +22,6 @@ def _venue_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_value.casefold()).strip("-")
 
 
-def route_venue(conn: sqlite3.Connection, channel: str, recipient: str) -> str | None:
-    row = conn.execute(
-        "SELECT r.venue_id FROM venue_routes r JOIN venues v ON v.id=r.venue_id "
-        "WHERE r.channel=? AND r.recipient=? COLLATE NOCASE AND r.active=1 AND v.active=1",
-        (channel, recipient.strip()),
-    ).fetchone()
-    return str(row["venue_id"]) if row else None
-
-
 def _receiver_account(conn: sqlite3.Connection, channel: str, recipient: str,
                       timestamp: str) -> str:
     row = conn.execute(
@@ -55,14 +46,13 @@ def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: st
     ).fetchone()
     timestamp = utc_now()
     account_id = _receiver_account(conn, channel, recipient, timestamp)
-    routed_venue_id = route_venue(conn, channel, recipient)
     if row:
         status = ("pending_review" if row["bot_paused"] else "open") \
             if row["status"] == "resolved" else row["status"]
         conn.execute(
-            "UPDATE conversations SET receiver_account_id=?,external_user_id=?,venue_id=COALESCE(venue_id,?),"
+            "UPDATE conversations SET receiver_account_id=?,external_user_id=?,venue_id=NULL,"
             "status=?,last_message_at=?,updated_at=? WHERE id=?",
-            (account_id, sender, routed_venue_id, status, max(str(row["last_message_at"]), message_at),
+            (account_id, sender, status, max(str(row["last_message_at"]), message_at),
              timestamp, row["id"]),
         )
         if row["status"] == "resolved":
@@ -72,7 +62,7 @@ def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: st
     conn.execute(
         "INSERT INTO conversations(id,channel,external_key,venue_id,status,last_message_at,created_at,"
         "updated_at,receiver_account_id,external_user_id) VALUES(?,?,?,?, 'open',?,?,?,?,?)",
-        (conversation_id, channel, external_key, routed_venue_id, message_at, timestamp, timestamp,
+        (conversation_id, channel, external_key, None, message_at, timestamp, timestamp,
          account_id, sender),
     )
     record(conn, actor, "conversation.created", "conversation", conversation_id, "open",
@@ -130,7 +120,8 @@ def update_venue(conn: sqlite3.Connection, venue_id: str, name: str, language: s
         fields.append("updated_at=?")
         values.extend((timestamp, venue_id))
         changed = conn.execute(
-            f"UPDATE venues SET {','.join(fields)} WHERE id=?", values,
+            # Field names are selected exclusively from constants above; values stay parameterized.
+            f"UPDATE venues SET {','.join(fields)} WHERE id=?", values,  # nosec B608
         ).rowcount
         if changed:
             details = {"language": language} if language is not None else {}
@@ -178,21 +169,6 @@ def disable_route(conn: sqlite3.Connection, route_id: str, actor: str) -> bool:
         record(conn, actor, "venue.route_disabled", "venue", route["venue_id"], "inactive",
                {"route_id": route_id, "channel": route["channel"]})
     return True
-
-
-def assign_conversation(conn: sqlite3.Connection, conversation_id: str,
-                        venue_id: str | None, actor: str) -> bool:
-    with transaction(conn, immediate=True):
-        if venue_id and not conn.execute("SELECT 1 FROM venues WHERE id=? AND active=1", (venue_id,)).fetchone():
-            raise ValueError("Active venue not found")
-        changed = conn.execute(
-            "UPDATE conversations SET venue_id=?,updated_at=? WHERE id=?",
-            (venue_id, utc_now(), conversation_id),
-        ).rowcount
-        if changed:
-            record(conn, actor, "conversation.assigned", "conversation", conversation_id,
-                   "assigned" if venue_id else "unassigned", {"venue_id": venue_id})
-    return bool(changed)
 
 
 def set_conversation_status(conn: sqlite3.Connection, conversation_id: str,

@@ -3,16 +3,23 @@ name = "rrpp-agent-bridge"
 version = "0.1.0"
 description = "Safe and observable bridge foundation for future promoter agents"
 requires-python = ">=3.12"
-dependencies = ["tzdata>=2025.2"]
+dependencies = ["tzdata==2026.3"]
 
 [project.optional-dependencies]
-deployment = ["gunicorn>=23,<24"]
+deployment = ["gunicorn==26.2.0"]
+quality = [
+  "bandit==1.9.4",
+  "build==1.6.0",
+  "mypy==2.3.1",
+  "pip-audit==2.10.1",
+  "ruff==0.16.5",
+]
 
 [project.scripts]
 rrpp-bridge = "rrpp_bridge.cli:main"
 
 [build-system]
-requires = ["hatchling>=1.30"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
@@ -23,3 +30,17 @@ packages = ["rrpp_bridge"]
 
 [tool.hatch.build]
 include = ["rrpp_bridge/**/*.py", "rrpp_bridge/sql/*.sql", "rrpp_bridge/static/*.css"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true

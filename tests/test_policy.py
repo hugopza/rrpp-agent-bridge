@@ -3,8 +3,13 @@ from __future__ import annotations
 import unittest
 
 from rrpp_bridge.models import IntendedAction
-from rrpp_bridge.policy import (Policy, controlled_topic_present, human_review_required,
-                                prohibited_outbound_claim, restricted_operation_requested)
+from rrpp_bridge.policy import (
+    Policy,
+    controlled_topic_present,
+    human_review_required,
+    prohibited_outbound_claim,
+    restricted_operation_requested,
+)
 
 
 def agent_payload(*, action: str = "reply", text: object = "Hola!",

@@ -9,8 +9,18 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 VALID_MODES = frozenset({"shadow", "dry-run", "canary", "live"})
+RRPP_ENV_KEYS = frozenset({
+    "RRPP_DATABASE_PATH", "RRPP_MODE", "RRPP_DASHBOARD_USER",
+    "RRPP_DASHBOARD_PASSWORD", "RRPP_SESSION_SECRET", "RRPP_HOST", "RRPP_PORT",
+    "RRPP_MAX_ATTEMPTS", "RRPP_LEASE_SECONDS", "RRPP_RESPONSE_DEBOUNCE_SECONDS",
+    "RRPP_CANARY_SENDERS", "RRPP_BACKUP_DIR", "RRPP_BACKUP_EXPORT_DIR",
+    "RRPP_BACKUP_AGE_RECIPIENT", "RRPP_BACKUP_HOUR", "RRPP_BACKUP_TIMEZONE",
+    "RRPP_INSTAGRAM_ENABLED", "RRPP_INSTAGRAM_PORT", "RRPP_INSTAGRAM_SEND_ENABLED",
+    "RRPP_INSTAGRAM_GRAPH_BASE_URL", "RRPP_INSTAGRAM_GRAPH_API_VERSION",
+    "RRPP_INSTAGRAM_SEND_TIMEOUT_SECONDS",
+})
 ENV_KEY = re.compile(
-    r"^(?:RRPP_[A-Z0-9_]+|"
+    r"^(?:"
     r"INSTAGRAM_(?:VERIFY_TOKEN|APP_SECRET|PAGE_ACCESS_TOKEN|BUSINESS_ACCOUNT_ID|"
     r"WEBHOOK_ACCOUNT_ID|ACCOUNTS_JSON|ACCOUNT_[A-Z][A-Z0-9_]{0,31}_ACCESS_TOKEN)|"
     r"OPENCLAW_(?:ENABLED|BASE_URL|AGENT_ID|AGENT_NAME|TIMEOUT_SECONDS|GATEWAY_TOKEN))$"
@@ -30,7 +40,7 @@ def load_local_env(path: Path = Path(".env")) -> None:
             raise ValueError(f"Invalid .env entry on line {number}")
         key, value = line.split("=", 1)
         key = key.strip()
-        if not ENV_KEY.fullmatch(key):
+        if key not in RRPP_ENV_KEYS and not ENV_KEY.fullmatch(key):
             raise ValueError(f"Invalid .env key on line {number}")
         os.environ.setdefault(key, value.strip())
 
@@ -106,7 +116,6 @@ class Settings:
     backup_age_recipient: str = ""
     backup_hour: int = 3
     backup_timezone: str = "Europe/Madrid"
-    venue_knowledge_dir: Path = Path("knowledge/venues")
     instagram_enabled: bool = False
     instagram_verify_token: str = ""
     instagram_app_secret: str = ""
@@ -199,7 +208,8 @@ class Settings:
             )
             instagram_business_account_id = ""
             instagram_webhook_account_id = ""
-            instagram_page_access_token = ""
+            # Explicitly remove the legacy credential when registry mode is selected.
+            instagram_page_access_token = ""  # nosec B105
         else:
             instagram_accounts = ()
         configured_accounts = instagram_accounts or (
@@ -240,7 +250,7 @@ class Settings:
         openclaw_base_url = os.getenv("OPENCLAW_BASE_URL", "http://127.0.0.1:18789").strip().rstrip("/")
         parsed_openclaw_url = urlparse(openclaw_base_url)
         try:
-            parsed_openclaw_url.port
+            _ = parsed_openclaw_url.port
         except ValueError as exc:
             raise ValueError("OPENCLAW_BASE_URL contains an invalid port") from exc
         if (parsed_openclaw_url.scheme != "http"
@@ -282,9 +292,6 @@ class Settings:
             backup_age_recipient=os.getenv("RRPP_BACKUP_AGE_RECIPIENT", "").strip(),
             backup_hour=backup_hour,
             backup_timezone=backup_timezone,
-            venue_knowledge_dir=Path(os.getenv(
-                "RRPP_VENUE_KNOWLEDGE_DIR", "knowledge/venues"
-            )).resolve(),
             instagram_enabled=instagram_enabled,
             instagram_verify_token=instagram_verify_token,
             instagram_app_secret=instagram_app_secret,

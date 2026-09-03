@@ -9,19 +9,27 @@ import time
 from datetime import datetime, timedelta, timezone
 from http import cookies
 from importlib import resources
-from urllib.parse import parse_qs, quote, urlencode
+from urllib.parse import parse_qs, urlencode
 from wsgiref.util import setup_testing_defaults
 
-from .config import Settings
 from .catalog import create_event, create_offer
+from .config import Settings
 from .db import connect, current_version, latest_version, prepare_runtime
 from .delivery import create_human_reply
+from .operations import service_health
 from .queue import JobQueue
 from .runtime import get_mode, initialize_mode, set_mode
-from .operations import service_health
+from .runtime_lock import DatabaseRuntimeLock
 from .service import ingest_local
-from .workspace import (add_route, assign_conversation, create_venue, disable_route, edit_review,
-                        set_bot_paused, set_conversation_status, transition_review, update_venue)
+from .workspace import (
+    create_venue,
+    disable_route,
+    edit_review,
+    set_bot_paused,
+    set_conversation_status,
+    transition_review,
+    update_venue,
+)
 
 
 def _escape(value: object) -> str:
@@ -31,12 +39,17 @@ def _escape(value: object) -> str:
 class Application:
     def __init__(self, settings: Settings):
         self.settings = settings
-        conn = self._connect()
+        self._runtime_lock = DatabaseRuntimeLock(settings.database_path, exclusive=False)
         try:
-            prepare_runtime(conn)
-            initialize_mode(conn, settings.mode)
-        finally:
-            conn.close()
+            conn = self._connect()
+            try:
+                prepare_runtime(conn)
+                initialize_mode(conn, settings.mode)
+            finally:
+                conn.close()
+        except Exception:
+            self._runtime_lock.close()
+            raise
         self.styles = resources.files("rrpp_bridge.static").joinpath("dashboard.css").read_text(
             encoding="utf-8"
         )
@@ -194,7 +207,7 @@ class Application:
             if match and method == "GET":
                 return self._detail(start_response, match.group(1), match.group(2))
             match = re.fullmatch(
-                r"/conversations/([A-Za-z0-9_-]+)/(assign|resolve|reopen|pause|resume|reply)", path
+                r"/conversations/([A-Za-z0-9_-]+)/(resolve|reopen|pause|resume|reply)", path
             )
             if match and method == "POST":
                 form = self._csrf_form(environ, csrf)
@@ -202,10 +215,7 @@ class Application:
                 try:
                     actor = f"dashboard:{self.settings.dashboard_user}"
                     operation = match.group(2)
-                    if operation == "assign":
-                        venue_id = form.get("venue_id", "") or None
-                        changed = assign_conversation(conn, match.group(1), venue_id, actor)
-                    elif operation == "pause":
+                    if operation == "pause":
                         changed = set_bot_paused(
                             conn, match.group(1), True, actor, form.get("reason", "")
                         )
@@ -302,19 +312,15 @@ class Application:
                 finally:
                     conn.close()
                 return self._respond(start_response, "303 See Other", "", [("Location", "/venues")])
-            match = re.fullmatch(r"/venues/([A-Za-z0-9_-]+)/(update|routes)", path)
+            match = re.fullmatch(r"/venues/([A-Za-z0-9_-]+)/update", path)
             if match and method == "POST":
                 form = self._csrf_form(environ, csrf)
                 conn = self._connect()
                 try:
                     actor = f"dashboard:{self.settings.dashboard_user}"
-                    if match.group(2) == "update":
-                        changed = update_venue(conn, match.group(1), form.get("name", ""),
-                                               None, form.get("active") == "1", actor,
-                                               form.get("bot_knowledge", ""))
-                    else:
-                        add_route(conn, match.group(1), form.get("channel", ""), form.get("recipient", ""), actor)
-                        changed = True
+                    changed = update_venue(conn, match.group(1), form.get("name", ""),
+                                           None, form.get("active") == "1", actor,
+                                           form.get("bot_knowledge", ""))
                 finally:
                     conn.close()
                 if not changed:
@@ -393,9 +399,9 @@ class Application:
             unassigned = conn.execute("SELECT count(*) FROM conversations WHERE venue_id IS NULL").fetchone()[0]
             pending_reviews = conn.execute("SELECT count(*) FROM action_reviews WHERE status='pending'").fetchone()[0]
             conversations = conn.execute(
-                "SELECT c.*,v.name venue_name,(SELECT sender FROM events e WHERE e.conversation_id=c.id ORDER BY received_at DESC,id DESC LIMIT 1) sender,"
-                "(SELECT subject FROM events e WHERE e.conversation_id=c.id ORDER BY received_at DESC,id DESC LIMIT 1) subject "
-                "FROM conversations c LEFT JOIN venues v ON v.id=c.venue_id ORDER BY c.last_message_at DESC,c.id DESC LIMIT 8"
+                "SELECT c.*,v.name venue_name,(SELECT sender FROM events e WHERE e.conversation_id=c.id ORDER BY rowid DESC LIMIT 1) sender,"
+                "(SELECT subject FROM events e WHERE e.conversation_id=c.id ORDER BY rowid DESC LIMIT 1) subject "
+                "FROM conversations c LEFT JOIN venues v ON v.id=c.venue_id ORDER BY c.last_message_at DESC,c.rowid DESC LIMIT 8"
             ).fetchall()
             audits = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 10").fetchall()
             failures = conn.execute("SELECT * FROM jobs WHERE state='dead_letter' ORDER BY updated_at DESC LIMIT 20").fetchall()
@@ -461,9 +467,7 @@ class Application:
         gmail_badge = self._badge("success" if gmail_state else "warning",
                                   "Sincronitzat" if gmail_state else "Pendent")
         gmail_time = self._time(gmail_state["updated_at"]) if gmail_state else "Encara sense cursor"
-        service_states = {row["service"]: service_health(
-            row, gmail_poll_seconds=self.settings.gmail_poll_seconds
-        ) for row in service_rows}
+        service_states = {row["service"]: service_health(row) for row in service_rows}
         alerts = []
         service_labels = {"worker": "Worker", "gmail": "Gmail", "maintenance": "Manteniment"}
         for service in ("worker", "gmail", "maintenance"):
@@ -575,7 +579,7 @@ class Application:
             conversations = conn.execute(
                 "SELECT c.*,ra.external_account_id receiver_account,"
                 "(SELECT body_text FROM conversation_messages m WHERE m.conversation_id=c.id "
-                " ORDER BY m.created_at DESC,m.id DESC LIMIT 1) last_text,"
+                 " ORDER BY m.rowid DESC LIMIT 1) last_text,"
                 "CASE WHEN c.bot_paused=1 OR c.status='pending_review' THEN 'pending_human' "
                 "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id "
                 " WHERE e.conversation_id=c.id AND j.state='processing') THEN 'processing' "
@@ -584,7 +588,7 @@ class Application:
                 "WHEN EXISTS(SELECT 1 FROM deliveries d WHERE d.conversation_id=c.id "
                 " AND d.status IN ('failed','unknown')) THEN 'error' ELSE c.status END operational_status "
                 "FROM conversations c LEFT JOIN receiver_accounts ra ON ra.id=c.receiver_account_id "
-                "ORDER BY c.last_message_at DESC,c.id DESC LIMIT 12"
+                "ORDER BY c.last_message_at DESC,c.rowid DESC LIMIT 12"
             ).fetchall()
             failures = conn.execute(
                 "SELECT 'job' kind,id,last_error_code error,updated_at FROM jobs "
@@ -646,18 +650,23 @@ class Application:
             raise ValueError("Invalid conversation status filter")
         if channel not in {"", "gmail", "instagram", "local"}:
             raise ValueError("Invalid channel filter")
-        clauses, params = ["1=1"], []
+        clauses: list[str] = ["1=1"]
+        params: list[object] = []
         if status:
-            clauses.append("c.status=?"); params.append(status)
+            clauses.append("c.status=?")
+            params.append(status)
         if channel:
-            clauses.append("c.channel=?"); params.append(channel)
+            clauses.append("c.channel=?")
+            params.append(channel)
         if venue == "unassigned":
             clauses.append("c.venue_id IS NULL")
         elif venue:
-            clauses.append("c.venue_id=?"); params.append(venue)
+            clauses.append("c.venue_id=?")
+            params.append(venue)
         if search:
             clauses.append("EXISTS(SELECT 1 FROM events se WHERE se.conversation_id=c.id AND (se.sender LIKE ? OR se.subject LIKE ? OR se.body_text LIKE ?))")
-            term = f"%{search}%"; params.extend((term, term, term))
+            term = f"%{search}%"
+            params.extend((term, term, term))
         if cursor:
             cursor_row = None
             conn = self._connect()
@@ -670,11 +679,11 @@ class Application:
             clauses.append("(c.last_message_at<? OR (c.last_message_at=? AND c.id<?))")
             params.extend((cursor_row["last_message_at"], cursor_row["last_message_at"], cursor_row["id"]))
         sql = (
-            "SELECT c.*,v.name venue_name,(SELECT sender FROM events e WHERE e.conversation_id=c.id ORDER BY received_at DESC,id DESC LIMIT 1) sender,"
-            "(SELECT subject FROM events e WHERE e.conversation_id=c.id ORDER BY received_at DESC,id DESC LIMIT 1) subject,"
+            "SELECT c.*,v.name venue_name,(SELECT sender FROM events e WHERE e.conversation_id=c.id ORDER BY rowid DESC LIMIT 1) sender,"  # nosec B608
+            "(SELECT subject FROM events e WHERE e.conversation_id=c.id ORDER BY rowid DESC LIMIT 1) subject,"
             "(SELECT count(*) FROM events e WHERE e.conversation_id=c.id) message_count FROM conversations c "
             "LEFT JOIN venues v ON v.id=c.venue_id WHERE " + " AND ".join(clauses) +
-            " ORDER BY c.last_message_at DESC,c.id DESC LIMIT 51"
+            " ORDER BY c.last_message_at DESC,c.rowid DESC LIMIT 51"
         )
         conn = self._connect()
         try:
@@ -738,16 +747,16 @@ class Application:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT c.*,ra.external_account_id receiver_account,"
+                "SELECT c.*,ra.external_account_id receiver_account,"  # nosec B608
                 "(SELECT body_text FROM conversation_messages m WHERE m.conversation_id=c.id "
-                " ORDER BY m.created_at DESC,m.id DESC LIMIT 1) last_text,"
+                " ORDER BY m.rowid DESC LIMIT 1) last_text,"
                 "(SELECT count(*) FROM conversation_messages m WHERE m.conversation_id=c.id) message_count,"
                 "CASE WHEN c.bot_paused=1 OR c.status='pending_review' THEN 'pending_human' "
                 "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='processing') THEN 'processing' "
                 "WHEN EXISTS(SELECT 1 FROM jobs j JOIN events e ON e.id=j.event_id WHERE e.conversation_id=c.id AND j.state='queued') THEN 'queued' "
                 "WHEN EXISTS(SELECT 1 FROM deliveries d WHERE d.conversation_id=c.id AND d.status IN ('failed','unknown')) THEN 'error' ELSE c.status END operational_status "
                 "FROM conversations c LEFT JOIN receiver_accounts ra ON ra.id=c.receiver_account_id "
-                "WHERE " + " AND ".join(clauses) + " ORDER BY c.last_message_at DESC,c.id DESC LIMIT 50",
+                "WHERE " + " AND ".join(clauses) + " ORDER BY c.last_message_at DESC,c.rowid DESC LIMIT 50",
                 params,
             ).fetchall()
         finally:
@@ -778,7 +787,7 @@ class Application:
             conversation = conn.execute("SELECT c.*,v.name venue_name FROM conversations c LEFT JOIN venues v ON v.id=c.venue_id WHERE c.id=?", (conversation_id,)).fetchone()
             if not conversation:
                 return self._respond(start_response, "404 Not Found", self._page("No trobat", "Conversa desconeguda"))
-            messages = conn.execute("SELECT * FROM events WHERE conversation_id=? ORDER BY received_at,id", (conversation_id,)).fetchall()
+            messages = conn.execute("SELECT * FROM events WHERE conversation_id=? ORDER BY rowid", (conversation_id,)).fetchall()
             reviews = conn.execute("SELECT r.*,a.type,p.reason FROM action_reviews r JOIN actions a ON a.id=r.action_id JOIN policy_decisions p ON p.action_id=a.id JOIN events e ON e.id=a.event_id WHERE e.conversation_id=? ORDER BY r.created_at DESC", (conversation_id,)).fetchall()
             venues = conn.execute("SELECT id,name FROM venues WHERE active=1 ORDER BY name").fetchall()
         finally:
@@ -815,7 +824,7 @@ class Application:
                     self._page("No trobat", "Conversa desconeguda"),
                 )
             messages = conn.execute(
-                "SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY created_at,id",
+                "SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY rowid",
                 (conversation_id,),
             ).fetchall()
             reviews = conn.execute(
@@ -909,34 +918,36 @@ class Application:
     def _activity(self, start_response, csrf: str, query: dict[str, str]):
         cursor_text = query.get("cursor", "")
         entity_type, outcome = query.get("entity_type", ""), query.get("outcome", "")
-        venue = query.get("venue", "")
         if cursor_text and (not cursor_text.isdigit() or int(cursor_text) < 1):
             raise ValueError("Invalid activity cursor")
         if len(entity_type) > 40 or len(outcome) > 40:
             raise ValueError("Invalid activity filter")
-        clauses, params = ["1=1"], []
+        clauses: list[str] = ["1=1"]
+        params: list[object] = []
         if cursor_text:
-            clauses.append("a.id<?"); params.append(int(cursor_text))
+            clauses.append("a.id<?")
+            params.append(int(cursor_text))
         if entity_type:
-            clauses.append("a.entity_type=?"); params.append(entity_type)
+            clauses.append("a.entity_type=?")
+            params.append(entity_type)
         if outcome:
-            clauses.append("a.outcome=?"); params.append(outcome)
-        if venue:
-            clauses.append("((a.entity_type='conversation' AND a.entity_id IN (SELECT id FROM conversations WHERE venue_id=?)) OR (a.entity_type='event' AND a.entity_id IN (SELECT e.id FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE c.venue_id=?)) OR (a.entity_type='job' AND a.entity_id IN (SELECT j.id FROM jobs j JOIN events e ON e.id=j.event_id JOIN conversations c ON c.id=e.conversation_id WHERE c.venue_id=?)) OR (a.entity_type='action' AND a.entity_id IN (SELECT ac.id FROM actions ac JOIN events e ON e.id=ac.event_id JOIN conversations c ON c.id=e.conversation_id WHERE c.venue_id=?)) OR (a.entity_type='review' AND a.entity_id IN (SELECT r.id FROM action_reviews r JOIN actions ac ON ac.id=r.action_id JOIN events e ON e.id=ac.event_id JOIN conversations c ON c.id=e.conversation_id WHERE c.venue_id=?)))")
-            params.extend((venue,) * 5)
+            clauses.append("a.outcome=?")
+            params.append(outcome)
         conn = self._connect()
         try:
-            rows = conn.execute("SELECT a.* FROM audit_log a WHERE " + " AND ".join(clauses) + " ORDER BY a.id DESC LIMIT 51", params).fetchall()
-            venues = conn.execute("SELECT id,name FROM venues WHERE active=1 ORDER BY name").fetchall()
+            rows = conn.execute(
+                "SELECT a.* FROM audit_log a WHERE " + " AND ".join(clauses)  # nosec B608
+                + " ORDER BY a.id DESC LIMIT 51", params
+            ).fetchall()
         finally:
             conn.close()
         has_more, rows = len(rows) > 50, rows[:50]
         items = "".join(f'<article class="activity-item"><span class="activity-dot"></span><span class="activity-copy"><strong>{_escape(r["operation"].replace(".", " · "))}</strong><small>{_escape(r["actor"])} · {_escape(r["entity_type"])} · {_escape(r["outcome"])}</small></span><span class="activity-time">{self._time(r["occurred_at"])}</span></article>' for r in rows) or '<p class="empty">No hi ha activitat amb aquests filtres.</p>'
-        venue_options = '<option value="">Totes</option>' + "".join(f'<option value="{_escape(v["id"])}"{" selected" if venue == v["id"] else ""}>{_escape(v["name"])}</option>' for v in venues)
-        filters = f'<form method="get" class="filter-bar"><label>Discoteca<select name="venue">{venue_options}</select></label><label>Tipus d’entitat<input name="entity_type" value="{_escape(entity_type)}" placeholder="conversation, review..."></label><label>Resultat<input name="outcome" value="{_escape(outcome)}" placeholder="pending, completed..."></label><button>Filtrar</button></form>'
+        filters = f'<form method="get" class="filter-bar"><label>Tipus d’entitat<input name="entity_type" value="{_escape(entity_type)}" placeholder="conversation, review..."></label><label>Resultat<input name="outcome" value="{_escape(outcome)}" placeholder="pending, completed..."></label><button>Filtrar</button></form>'
         next_link = ""
         if has_more and rows:
-            preserved = {k: v for k, v in query.items() if k != "cursor" and v}; preserved["cursor"] = str(rows[-1]["id"])
+            preserved = {k: v for k, v in query.items() if k != "cursor" and v}
+            preserved["cursor"] = str(rows[-1]["id"])
             next_link = f'<a class="button secondary" href="/activity?{urlencode(preserved)}">Activitat anterior</a>'
         body = f'<section class="hero compact"><p class="eyebrow">Traçabilitat</p><h1>Activitat</h1><p class="hero-copy">Històric complet, 50 registres per pàgina. No s’elimina activitat.</p></section>{filters}<section class="section card"><div class="activity-list">{items}</div></section><div class="pagination">{next_link}</div>'
         return self._respond(start_response, "200 OK", self._layout("Activitat · RRPP", csrf, "activity", body))
@@ -944,7 +955,7 @@ class Application:
     def _venues(self, start_response, csrf: str):
         conn = self._connect()
         try:
-            venues = conn.execute("SELECT v.*,(SELECT count(*) FROM conversations c WHERE c.venue_id=v.id) conversation_count FROM venues v ORDER BY v.active DESC,v.name").fetchall()
+            venues = conn.execute("SELECT v.* FROM venues v ORDER BY v.active DESC,v.name").fetchall()
             catalog_events = conn.execute(
                 "SELECT ce.*,v.name venue_name FROM catalog_events ce JOIN venues v ON v.id=ce.venue_id "
                 "WHERE ce.active=1 ORDER BY ce.starts_at"
@@ -959,7 +970,7 @@ class Application:
         cards = []
         for venue in venues:
             cards.append(f'''<article class="card venue-card">
-              <div class="card-header"><div><h2>{_escape(venue["name"])}</h2><p>{venue["conversation_count"]} converses · /{_escape(venue["slug"])}</p></div>{self._badge("success" if venue["active"] else "warning", "Activa" if venue["active"] else "Inactiva")}</div>
+              <div class="card-header"><div><h2>{_escape(venue["name"])}</h2><p>/{_escape(venue["slug"])}</p></div>{self._badge("success" if venue["active"] else "warning", "Activa" if venue["active"] else "Inactiva")}</div>
               <form method="post" action="/venues/{_escape(venue["id"])}/update" class="mode-form">
                 <input type="hidden" name="csrf" value="{_escape(csrf)}">
                 <label>Nom<input name="name" value="{_escape(venue["name"])}" required maxlength="120"></label>
@@ -1024,7 +1035,10 @@ class Application:
         conn = self._connect()
         try:
             table = {"events": "events", "jobs": "jobs", "actions": "actions"}[kind]
-            row = conn.execute(f"SELECT * FROM {table} WHERE id=?", (entity_id,)).fetchone()
+            # The table identifier is selected from the fixed map above.
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE id=?", (entity_id,)  # nosec B608
+            ).fetchone()
             if row is None:
                 return self._respond(start_response, "404 Not Found", self._page("Not found", "Unknown entity"))
             related = []
@@ -1053,7 +1067,8 @@ class Application:
                 ).fetchall()
             placeholders = ",".join("?" for _ in entity_ids)
             audits = conn.execute(
-                f"SELECT * FROM audit_log WHERE entity_id IN ({placeholders}) ORDER BY id", entity_ids
+                f"SELECT * FROM audit_log WHERE entity_id IN ({placeholders}) ORDER BY id",  # nosec B608
+                entity_ids,
             ).fetchall()
         finally:
             conn.close()
