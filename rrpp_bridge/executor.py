@@ -27,7 +27,7 @@ class Executor:
     def __init__(self, conn: sqlite3.Connection, max_attempts: int = 3,
                  lease_seconds: int = 60, canary_senders: frozenset[str] = frozenset(),
                  agent_provider: AgentProvider | None = None,
-                 instagram_sender=None):
+                 instagram_senders=None):
         self.conn = conn
         self.max_attempts = max_attempts
         self.lease_seconds = lease_seconds
@@ -36,7 +36,7 @@ class Executor:
         self.action_executor = LocalActionExecutor(conn, canary_senders)
         self.agent_provider = agent_provider or DeterministicAgentProvider()
         self.delivery_executor = DeliveryExecutor(
-            conn, instagram_sender, canary_senders, lease_seconds
+            conn, instagram_senders, canary_senders, lease_seconds
         )
 
     @staticmethod
@@ -185,7 +185,7 @@ class Executor:
                 in self.action_executor.canary_senders
             )
             if (policy.outcome == "allowed" and auto_mode
-                    and self.delivery_executor.sender is not None):
+                    and self.delivery_executor.has_sender(str(event["recipient"]))):
                 enqueue_delivery(
                     self.conn, action_id, str(event["conversation_id"]), "instagram",
                     str(event["recipient"]), str(event["sender"]), decision.text,

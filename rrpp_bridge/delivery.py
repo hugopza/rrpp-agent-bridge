@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
 from .audit import record, utc_now
@@ -73,7 +74,7 @@ def create_human_reply(conn: sqlite3.Connection, conversation_id: str, text: str
              timestamp, "human"),
         )
         conn.execute(
-            "INSERT INTO policy_decisions VALUES(?,?,?,'policy.authenticated-human.v2',?,?)",
+            "INSERT INTO policy_decisions VALUES(?,?,?,'policy.authenticated-human.v3',?,?)",
             (_id("dec"), action_id, "allowed",
              "Authenticated human response may use the delivery queue", timestamp),
         )
@@ -91,12 +92,16 @@ def create_human_reply(conn: sqlite3.Connection, conversation_id: str, text: str
 
 
 class DeliveryExecutor:
-    def __init__(self, conn: sqlite3.Connection, sender: InstagramSender | None,
+    def __init__(self, conn: sqlite3.Connection,
+                 senders: Mapping[str, InstagramSender] | None,
                  canary_senders: frozenset[str], lease_seconds: int = 60):
         self.conn = conn
-        self.sender = sender
+        self.senders = dict(senders or {})
         self.canary_senders = canary_senders
         self.lease_seconds = lease_seconds
+
+    def has_sender(self, sender_account_id: str) -> bool:
+        return sender_account_id in self.senders
 
     def recover_stale(self, actor: str = "worker.delivery-recovery") -> int:
         timestamp = utc_now()
@@ -206,11 +211,12 @@ class DeliveryExecutor:
         if reason:
             self._suppress(delivery, reason, worker_id)
             return True
-        if self.sender is None:
-            self._finish_error(delivery, "instagram_sender_disabled", False, worker_id)
+        sender = self.senders.get(str(delivery["sender_account_id"]))
+        if sender is None:
+            self._finish_error(delivery, "instagram_sender_not_configured", False, worker_id)
             return True
         try:
-            result = self.sender.send_text(
+            result = sender.send_text(
                 str(delivery["recipient_external_id"]), str(delivery["body_text"])
             )
         except InstagramSendError as exc:

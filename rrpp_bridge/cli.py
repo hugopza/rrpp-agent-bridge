@@ -10,10 +10,10 @@ from urllib.request import urlopen
 from wsgiref.simple_server import make_server
 
 from .agent_provider import AgentContext, AgentProviderError, build_agent_provider
-from .config import Settings, VALID_MODES
+from .config import Settings, VALID_MODES, load_local_env
 from .db import backup_database, connect, current_version, initialize, latest_version, prepare_runtime
 from .queue import JobQueue
-from .instagram_sender import build_instagram_sender
+from .instagram_sender import build_instagram_senders
 from .operations import (create_backup, instance_id, restore_backup, run_maintenance,
                          SERVICES, service_health, start_service, stop_service, verify_backup,
                          heartbeat)
@@ -46,6 +46,8 @@ def _prepare(settings: Settings):
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="rrpp-bridge")
+    parser.add_argument("--env-file", type=Path,
+                        help="load configuration from this KEY=VALUE file")
     sub = parser.add_subparsers(dest="command", required=True)
     for command in ("init-db", "migrate", "status", "recover-stale", "web",
                     "instagram-webhook", "agent-check"):
@@ -67,8 +69,10 @@ def main() -> None:
     restore.add_argument("--confirm", required=True)
     restore.add_argument("--identity")
     healthcheck = sub.add_parser("healthcheck")
-    healthcheck.add_argument("service", choices=("web", "worker", "maintenance"))
+    healthcheck.add_argument("service", choices=("web", "worker", "maintenance", "instagram"))
     args = parser.parse_args()
+    if args.env_file is not None:
+        load_local_env(args.env_file)
     settings = Settings.from_env(require_auth=args.command == "web")
 
     if args.command == "agent-check":
@@ -124,9 +128,11 @@ def main() -> None:
 
     conn = _prepare(settings)
     if args.command == "healthcheck":
-        if args.service == "web":
+        if args.service in {"web", "instagram"}:
+            port = settings.port if args.service == "web" else settings.instagram_port
+            path = "/login" if args.service == "web" else "/healthz"
             try:
-                with urlopen(f"http://127.0.0.1:{settings.port}/login", timeout=3) as response:
+                with urlopen(f"http://127.0.0.1:{port}{path}", timeout=3) as response:
                     healthy = response.status == 200
             except OSError:
                 healthy = False
@@ -190,12 +196,12 @@ def main() -> None:
     _install_shutdown_handlers()
     last_heartbeat = 0.0
     agent_provider = build_agent_provider(settings)
-    instagram_sender = build_instagram_sender(settings)
+    instagram_senders = build_instagram_senders(settings)
     try:
         while True:
             processed = process_one(conn, worker_id, settings.max_attempts,
                                     settings.lease_seconds, settings.canary_senders,
-                                    agent_provider, instagram_sender)
+                                    agent_provider, instagram_senders)
             now = time.monotonic()
             if processed or now - last_heartbeat >= 10:
                 heartbeat(conn, "worker", instance, success=processed,

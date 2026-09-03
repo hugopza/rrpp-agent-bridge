@@ -18,6 +18,22 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-09-03 - Ubuntu production keeps the worker on the host
+
+- Status: Verified
+- Area: deployment and network boundaries
+- Fact: The Ubuntu 24.04 production topology runs the worker under system `systemd` so it can reach the authenticated OpenClaw Gateway exclusively through host loopback. Hardened Compose containers run web, Instagram ingress, and maintenance with loopback-only published ports; host Nginx proxies only the exact Instagram webhook path.
+- Evidence: ADR-0015, `deploy/systemd/`, `deploy/nginx/`, `compose.yaml`, and `scripts/deploy.sh`.
+- Implication: Do not move the worker into bridge-networked Compose or publish another Nginx path without a security review and accepted ADR. Preserve shared local SQLite ownership through host/container UID 10001.
+
+### 2026-08-06 - Instagram accounts use exact receiver-to-sender mappings
+
+- Status: Verified
+- Area: Instagram configuration, ingress, and delivery
+- Fact: One Meta App may configure multiple professional accounts through an explicit registry. Inbound events require an exact receiver-ID match, conversations remain account/customer scoped, and outbound delivery uses only the sender credentials mapped to the durable receiver ID. Missing mappings fail closed. Legacy singular variables remain a fallback only when the registry is absent.
+- Evidence: ADR-0013, multi-account configuration, webhook, and delivery tests; the 70-test suite, bytecode compilation, wheel/sdist builds, and clean diff validation.
+- Implication: Add accounts with `INSTAGRAM_ACCOUNTS_JSON` plus one alias-derived token environment variable per account. Never add a default sender or inline tokens in the registry. A different Meta App requires a separate security review.
+
 ### 2026-07-16 - Structured OpenClaw decisions and bridge-owned delivery
 
 - Status: Verified

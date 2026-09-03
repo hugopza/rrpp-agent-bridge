@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -10,9 +11,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 VALID_MODES = frozenset({"shadow", "dry-run", "canary", "live"})
 ENV_KEY = re.compile(
     r"^(?:RRPP_[A-Z0-9_]+|"
-    r"INSTAGRAM_(?:VERIFY_TOKEN|APP_SECRET|PAGE_ACCESS_TOKEN|BUSINESS_ACCOUNT_ID|WEBHOOK_ACCOUNT_ID)|"
+    r"INSTAGRAM_(?:VERIFY_TOKEN|APP_SECRET|PAGE_ACCESS_TOKEN|BUSINESS_ACCOUNT_ID|"
+    r"WEBHOOK_ACCOUNT_ID|ACCOUNTS_JSON|ACCOUNT_[A-Z][A-Z0-9_]{0,31}_ACCESS_TOKEN)|"
     r"OPENCLAW_(?:ENABLED|BASE_URL|AGENT_ID|AGENT_NAME|TIMEOUT_SECONDS|GATEWAY_TOKEN))$"
 )
+INSTAGRAM_ACCOUNT_ALIAS = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
 def load_local_env(path: Path = Path(".env")) -> None:
@@ -33,6 +36,60 @@ def load_local_env(path: Path = Path(".env")) -> None:
 
 
 @dataclass(frozen=True)
+class InstagramAccountSettings:
+    alias: str
+    webhook_account_id: str
+    business_account_id: str
+    access_token: str = ""
+
+
+def _instagram_accounts_from_json(raw: str, *, send_enabled: bool) -> tuple[InstagramAccountSettings, ...]:
+    if len(raw) > 32_768:
+        raise ValueError("INSTAGRAM_ACCOUNTS_JSON is too large")
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("INSTAGRAM_ACCOUNTS_JSON must be valid JSON") from exc
+    if not isinstance(values, list) or not values:
+        raise ValueError("INSTAGRAM_ACCOUNTS_JSON must be a non-empty array")
+    accounts: list[InstagramAccountSettings] = []
+    aliases: set[str] = set()
+    webhook_ids: set[str] = set()
+    business_ids: set[str] = set()
+    allowed_keys = {"alias", "webhook_account_id", "business_account_id"}
+    for value in values:
+        if not isinstance(value, dict) or set(value) != allowed_keys:
+            raise ValueError(
+                "Each Instagram account must contain only alias, webhook_account_id, "
+                "and business_account_id"
+            )
+        alias = value.get("alias")
+        webhook_id = value.get("webhook_account_id")
+        business_id = value.get("business_account_id")
+        if not isinstance(alias, str) or not INSTAGRAM_ACCOUNT_ALIAS.fullmatch(alias):
+            raise ValueError("Instagram account aliases must use lowercase letters, digits, or underscores")
+        if (not isinstance(webhook_id, str) or not webhook_id.strip()
+                or len(webhook_id.strip()) > 200):
+            raise ValueError("Instagram webhook account IDs must contain 1 to 200 characters")
+        if (not isinstance(business_id, str) or not business_id.strip()
+                or len(business_id.strip()) > 200):
+            raise ValueError("Instagram business account IDs must contain 1 to 200 characters")
+        alias, webhook_id, business_id = alias.strip(), webhook_id.strip(), business_id.strip()
+        if alias in aliases or webhook_id.casefold() in webhook_ids:
+            raise ValueError("Instagram account aliases and webhook account IDs must be unique")
+        if business_id.casefold() in business_ids:
+            raise ValueError("Instagram business account IDs must be unique")
+        token = os.getenv(f"INSTAGRAM_ACCOUNT_{alias.upper()}_ACCESS_TOKEN", "").strip()
+        if send_enabled and not token:
+            raise ValueError(f"Instagram account {alias} requires its access token environment variable")
+        aliases.add(alias)
+        webhook_ids.add(webhook_id.casefold())
+        business_ids.add(business_id.casefold())
+        accounts.append(InstagramAccountSettings(alias, webhook_id, business_id, token))
+    return tuple(accounts)
+
+
+@dataclass(frozen=True)
 class Settings:
     database_path: Path
     mode: str
@@ -49,12 +106,14 @@ class Settings:
     backup_age_recipient: str = ""
     backup_hour: int = 3
     backup_timezone: str = "Europe/Madrid"
+    venue_knowledge_dir: Path = Path("knowledge/venues")
     instagram_enabled: bool = False
     instagram_verify_token: str = ""
     instagram_app_secret: str = ""
     instagram_page_access_token: str = ""
     instagram_business_account_id: str = ""
     instagram_webhook_account_id: str = ""
+    instagram_accounts: tuple[InstagramAccountSettings, ...] = ()
     instagram_port: int = 8081
     instagram_send_enabled: bool = False
     instagram_graph_base_url: str = "https://graph.instagram.com"
@@ -66,6 +125,21 @@ class Settings:
     openclaw_agent_id: str = "rrpp"
     openclaw_timeout_seconds: float = 60.0
     openclaw_gateway_token: str = ""
+
+    def configured_instagram_accounts(self) -> tuple[InstagramAccountSettings, ...]:
+        if self.instagram_accounts:
+            return self.instagram_accounts
+        if self.instagram_webhook_account_id or self.instagram_business_account_id:
+            return (InstagramAccountSettings(
+                "legacy", self.instagram_webhook_account_id,
+                self.instagram_business_account_id, self.instagram_page_access_token,
+            ),)
+        return ()
+
+    def instagram_webhook_account_ids(self) -> frozenset[str]:
+        return frozenset(
+            account.webhook_account_id for account in self.configured_instagram_accounts()
+        )
 
     @classmethod
     def from_env(cls, *, require_auth: bool = True) -> "Settings":
@@ -109,19 +183,41 @@ class Settings:
             "INSTAGRAM_WEBHOOK_ACCOUNT_ID", instagram_business_account_id
         ).strip()
         instagram_page_access_token = os.getenv("INSTAGRAM_PAGE_ACCESS_TOKEN", "").strip()
-        if instagram_enabled and not all((instagram_verify_token, instagram_app_secret,
-                                          instagram_webhook_account_id)):
-            raise ValueError(
-                "Enabled Instagram webhook requires verify token, app secret, and webhook account ID"
-            )
         instagram_send_value = os.getenv("RRPP_INSTAGRAM_SEND_ENABLED", "false").strip().casefold()
         if instagram_send_value not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
             raise ValueError("RRPP_INSTAGRAM_SEND_ENABLED must be a boolean value")
         instagram_send_enabled = instagram_send_value in {"1", "true", "yes", "on"}
-        if instagram_send_enabled and (not instagram_enabled or not instagram_page_access_token
-                                       or not instagram_business_account_id):
+        accounts_json = os.getenv("INSTAGRAM_ACCOUNTS_JSON", "").strip()
+        if accounts_json:
+            if any((instagram_page_access_token, instagram_business_account_id,
+                    os.getenv("INSTAGRAM_WEBHOOK_ACCOUNT_ID", "").strip())):
+                raise ValueError(
+                    "INSTAGRAM_ACCOUNTS_JSON cannot be combined with legacy Instagram account variables"
+                )
+            instagram_accounts = _instagram_accounts_from_json(
+                accounts_json, send_enabled=instagram_send_enabled
+            )
+            instagram_business_account_id = ""
+            instagram_webhook_account_id = ""
+            instagram_page_access_token = ""
+        else:
+            instagram_accounts = ()
+        configured_accounts = instagram_accounts or (
+            (InstagramAccountSettings(
+                "legacy", instagram_webhook_account_id,
+                instagram_business_account_id, instagram_page_access_token,
+            ),) if instagram_webhook_account_id or instagram_business_account_id else ()
+        )
+        if instagram_enabled and (not instagram_verify_token or not instagram_app_secret
+                                  or not configured_accounts):
             raise ValueError(
-                "Instagram sending requires the enabled webhook, business account ID, and access token"
+                "Enabled Instagram webhook requires verify token, app secret, and configured accounts"
+            )
+        if instagram_send_enabled and (not instagram_enabled or any(
+                not account.business_account_id or not account.access_token
+                for account in configured_accounts)):
+            raise ValueError(
+                "Instagram sending requires the enabled webhook and complete account credentials"
             )
         instagram_graph_base_url = os.getenv(
             "RRPP_INSTAGRAM_GRAPH_BASE_URL", "https://graph.instagram.com"
@@ -186,12 +282,16 @@ class Settings:
             backup_age_recipient=os.getenv("RRPP_BACKUP_AGE_RECIPIENT", "").strip(),
             backup_hour=backup_hour,
             backup_timezone=backup_timezone,
+            venue_knowledge_dir=Path(os.getenv(
+                "RRPP_VENUE_KNOWLEDGE_DIR", "knowledge/venues"
+            )).resolve(),
             instagram_enabled=instagram_enabled,
             instagram_verify_token=instagram_verify_token,
             instagram_app_secret=instagram_app_secret,
             instagram_page_access_token=instagram_page_access_token,
             instagram_business_account_id=instagram_business_account_id,
             instagram_webhook_account_id=instagram_webhook_account_id,
+            instagram_accounts=instagram_accounts,
             instagram_port=instagram_port,
             instagram_send_enabled=instagram_send_enabled,
             instagram_graph_base_url=instagram_graph_base_url,

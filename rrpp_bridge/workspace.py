@@ -55,13 +55,14 @@ def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: st
     ).fetchone()
     timestamp = utc_now()
     account_id = _receiver_account(conn, channel, recipient, timestamp)
+    routed_venue_id = route_venue(conn, channel, recipient)
     if row:
         status = ("pending_review" if row["bot_paused"] else "open") \
             if row["status"] == "resolved" else row["status"]
         conn.execute(
-            "UPDATE conversations SET receiver_account_id=?,external_user_id=?,status=?,"
-            "last_message_at=?,updated_at=? WHERE id=?",
-            (account_id, sender, status, max(str(row["last_message_at"]), message_at),
+            "UPDATE conversations SET receiver_account_id=?,external_user_id=?,venue_id=COALESCE(venue_id,?),"
+            "status=?,last_message_at=?,updated_at=? WHERE id=?",
+            (account_id, sender, routed_venue_id, status, max(str(row["last_message_at"]), message_at),
              timestamp, row["id"]),
         )
         if row["status"] == "resolved":
@@ -70,8 +71,8 @@ def ensure_conversation(conn: sqlite3.Connection, channel: str, external_key: st
     conversation_id = _id("conv")
     conn.execute(
         "INSERT INTO conversations(id,channel,external_key,venue_id,status,last_message_at,created_at,"
-        "updated_at,receiver_account_id,external_user_id) VALUES(?,?,?,NULL,'open',?,?,?,?,?)",
-        (conversation_id, channel, external_key, message_at, timestamp, timestamp,
+        "updated_at,receiver_account_id,external_user_id) VALUES(?,?,?,?, 'open',?,?,?,?,?)",
+        (conversation_id, channel, external_key, routed_venue_id, message_at, timestamp, timestamp,
          account_id, sender),
     )
     record(conn, actor, "conversation.created", "conversation", conversation_id, "open",

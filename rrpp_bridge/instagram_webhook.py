@@ -76,7 +76,9 @@ class InstagramWebhookApplication:
             payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("Payload must be an object")
-            events, sanitized, ignored = normalize(payload, self.settings.instagram_webhook_account_id)
+            events, sanitized, ignored = normalize(
+                payload, self.settings.instagram_webhook_account_ids()
+            )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return self._respond(start_response, "400 Bad Request", "Invalid request")
         digest = hashlib.sha256(body).hexdigest()
@@ -115,6 +117,21 @@ class InstagramWebhookApplication:
         return self._respond(start_response, "200 OK", "EVENT_RECEIVED")
 
     def __call__(self, environ, start_response):
+        if environ.get("PATH_INFO", "") == "/healthz":
+            if environ.get("REQUEST_METHOD", "GET").upper() != "GET":
+                return self._respond(start_response, "405 Method Not Allowed", "Method not allowed")
+            if not self.settings.instagram_enabled:
+                return self._respond(start_response, "503 Service Unavailable", "Unavailable")
+            try:
+                conn = connect(self.settings.database_path)
+                try:
+                    prepare_runtime(conn)
+                    conn.execute("SELECT 1").fetchone()
+                finally:
+                    conn.close()
+            except Exception:
+                return self._respond(start_response, "503 Service Unavailable", "Unavailable")
+            return self._respond(start_response, "200 OK", "OK")
         if not self.settings.instagram_enabled:
             return self._respond(start_response, "404 Not Found", "Not found")
         if environ.get("PATH_INFO", "") != "/webhooks/instagram":

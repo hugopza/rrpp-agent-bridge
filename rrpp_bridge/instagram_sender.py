@@ -76,13 +76,22 @@ class InstagramSender:
         return InstagramSendResult(recipient, message)
 
 
-def build_instagram_sender(settings) -> InstagramSender | None:
+def build_instagram_senders(settings) -> dict[str, InstagramSender]:
     if not settings.instagram_send_enabled:
-        return None
-    return InstagramSender(
-        settings.instagram_graph_base_url,
-        settings.instagram_graph_api_version,
-        settings.instagram_business_account_id,
-        settings.instagram_page_access_token,
-        settings.instagram_send_timeout_seconds,
-    )
+        return {}
+    return {
+        account.webhook_account_id: InstagramSender(
+            settings.instagram_graph_base_url,
+            settings.instagram_graph_api_version,
+            account.business_account_id,
+            account.access_token,
+            settings.instagram_send_timeout_seconds,
+        )
+        for account in settings.configured_instagram_accounts()
+    }
+
+
+def build_instagram_sender(settings) -> InstagramSender | None:
+    """Compatibility helper for callers that only support one configured account."""
+    senders = build_instagram_senders(settings)
+    return next(iter(senders.values())) if len(senders) == 1 else None

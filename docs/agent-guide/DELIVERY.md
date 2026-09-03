@@ -28,7 +28,7 @@ Status: Historical and retired from the active product on 2026-07-16. Migration 
 
 Validate adapter contracts for official Instagram and WhatsApp APIs, ticketing webhooks/imports, click tracking, and sales reporting. Do not implement a connector until its official integration path, security model, and operational ownership are understood.
 
-Instagram increment status: Inbound webhook completed on 2026-07-02 and bridge-controlled outbound delivery completed on 2026-07-16. Signed DM events enter the common queue; structured safe decisions may use Meta's official Send API in `canary` or `live`. Production activation still requires Meta configuration, public HTTPS ingress, required permissions, and applicable Meta review.
+Instagram increment status: Inbound webhook completed on 2026-07-02, bridge-controlled outbound delivery completed on 2026-07-16, and explicit multi-account routing completed on 2026-08-06. Signed DM events for configured receiver IDs enter the common queue; structured safe decisions may use the exact receiving account's official Meta Send API credentials in `canary` or `live`. Production activation still requires Meta configuration, public HTTPS ingress, required permissions, and applicable Meta review.
 
 ## Operational Workspace Increment
 
@@ -36,7 +36,7 @@ Status: Superseded on 2026-07-16 by account/customer conversations and a global 
 
 ## Reliable Operations Increment
 
-Status: Completed on 2026-06-21 and updated on 2026-07-16. Worker and maintenance expose durable sanitized heartbeats in the private dashboard. SQLite-native backups are verified, retained as seven daily and three monthly copies, optionally exported with `age`, and restorable only through an offline confirmed CLI flow with a pre-restore safety copy. Compose defines web, worker, Instagram ingress, maintenance, and migration services; the dashboard binds to loopback.
+Status: Completed on 2026-06-21 and productionized for Ubuntu 24.04 on 2026-09-03. Worker and maintenance expose durable sanitized heartbeats in the private dashboard. SQLite-native backups are verified, retained as seven daily and three monthly copies, optionally exported with `age`, and restorable only through an offline confirmed CLI flow with a pre-restore safety copy. Production runs the worker under hardened host `systemd` for loopback OpenClaw access, retains hardened Compose services for web, Instagram ingress, and maintenance, and exposes only the exact webhook path through host Nginx HTTPS. Dashboard, ingress backend, OpenClaw, SQLite, and backups remain non-public. The deployment script performs pull, build, explicit migration, restart, and healthchecks.
 
 ## Local OpenClaw Draft Increment
 
@@ -49,6 +49,10 @@ Validation covers local-only configuration, structured response parsing, timeout
 Status: Completed on 2026-07-16. Conversations are identified by channel, receiving account, and external customer. Venues, events, offers, links, conditions, availability, and verification metadata form a bridge-owned catalog available across conversations. OpenClaw returns one validated decision and never receives channel credentials or delivery tools. Deterministic policy allows only bounded safe replies or clarifications; sensitive, unknown, invalid, or paused cases require a person.
 
 Eligible Instagram responses create a durable delivery before the official Meta request. The delivery executor rechecks mode, policy, pause state, freshness, and idempotency. Human dashboard replies use the same queue. Ambiguous results pause the bot for reconciliation instead of retrying blindly. Message bursts debounce and supersede older jobs so a conversation receives one answer to the latest accumulated context.
+
+Multiple professional accounts from one Meta App share the verified webhook endpoint and App Secret but use an explicit receiver-to-sender registry. Per-account access tokens remain separate environment variables. Unknown receivers are ignored and a missing outbound mapping fails closed, so no message can be sent from another configured account by fallback. The legacy singular account variables remain supported when the registry is absent; mixed configuration is rejected.
+
+Multi-account validation includes two-account ingress with the same external customer, exact sender selection for both accounts, unknown and unmapped receiver suppression, configuration failure cases, the 70-test suite, bytecode compilation, wheel/sdist builds, and clean diff validation.
 
 Validation includes 61 automated tests, bytecode compilation, migration of the real database with a pre-migration backup, a live authenticated OpenClaw structured-contract check, and empty-queue verification before process startup.
 

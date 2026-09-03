@@ -108,20 +108,29 @@ def create_offer(conn: sqlite3.Connection, event_id: str, name: str, ticket_type
     return offer_id
 
 
-def load_snapshot(conn: sqlite3.Connection, *, max_items: int = 50) -> tuple[CatalogItem, ...]:
+def load_snapshot(conn: sqlite3.Connection, *, venue_id: str | None = None,
+                  venue_knowledge: str = "", max_items: int = 50) -> tuple[CatalogItem, ...]:
+    """Return facts for one routed venue; never combine venue catalogs."""
     items: list[CatalogItem] = []
+    if not venue_id:
+        return ()
     venues = conn.execute(
-        "SELECT id,name,bot_knowledge,updated_at FROM venues WHERE active=1 ORDER BY name LIMIT 20"
+        "SELECT id,name,bot_knowledge,updated_at FROM venues WHERE active=1 AND id=? LIMIT 1",
+        (venue_id,),
     ).fetchall()
     for row in venues:
         items.append(CatalogItem(
             "venue", str(row["id"]), str(row["updated_at"]),
-            {"name": str(row["name"]), "verified_notes": str(row["bot_knowledge"] or "")[:4_000]},
+            {"name": str(row["name"]), "verified_notes": (
+                venue_knowledge or str(row["bot_knowledge"] or "")[:4_000]
+            )},
         ))
+    if not venues:
+        return ()
     rows = conn.execute(
         "SELECT ce.*,v.name venue_name FROM catalog_events ce JOIN venues v ON v.id=ce.venue_id "
-        "WHERE ce.active=1 AND v.active=1 AND ce.status='scheduled' "
-        "ORDER BY ce.starts_at LIMIT 30"
+        "WHERE ce.active=1 AND v.active=1 AND ce.status='scheduled' AND ce.venue_id=? "
+        "ORDER BY ce.starts_at LIMIT 30", (venue_id,)
     ).fetchall()
     for row in rows:
         items.append(CatalogItem(
@@ -136,7 +145,7 @@ def load_snapshot(conn: sqlite3.Connection, *, max_items: int = 50) -> tuple[Cat
         " ORDER BY l.created_at DESC LIMIT 1) purchase_url "
         "FROM catalog_offers o JOIN catalog_events ce ON ce.id=o.event_id "
         "JOIN venues v ON v.id=ce.venue_id WHERE o.active=1 AND ce.active=1 AND v.active=1 "
-        "ORDER BY ce.starts_at,o.price_minor LIMIT 40"
+        "AND ce.venue_id=? ORDER BY ce.starts_at,o.price_minor LIMIT 40", (venue_id,)
     ).fetchall()
     for row in rows:
         items.append(CatalogItem(

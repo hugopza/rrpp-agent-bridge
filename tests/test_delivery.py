@@ -7,11 +7,12 @@ from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 
+from rrpp_bridge.config import InstagramAccountSettings, Settings
 from rrpp_bridge.db import connect, initialize
 from rrpp_bridge.delivery import create_human_reply
 from rrpp_bridge.executor import Executor
 from rrpp_bridge.instagram_sender import (InstagramSendError, InstagramSendResult,
-                                           InstagramSender)
+                                           InstagramSender, build_instagram_senders)
 from rrpp_bridge.models import AgentDecision, NormalizedEvent
 from rrpp_bridge.queue import JobQueue
 from rrpp_bridge.runtime import initialize_mode, set_mode
@@ -52,6 +53,25 @@ class FakeResponse:
 
 
 class InstagramSenderTests(unittest.TestCase):
+    def test_builder_keys_each_sender_by_webhook_receiver(self):
+        settings = Settings(
+            Path("unused.db"), "shadow", "", "", "",
+            instagram_send_enabled=True,
+            instagram_accounts=(
+                InstagramAccountSettings("primary", "ig-webhook-1", "ig-send-1", "token-1"),
+                InstagramAccountSettings("secondary", "ig-webhook-2", "ig-send-2", "token-2"),
+            ),
+        )
+        senders = build_instagram_senders(settings)
+        self.assertEqual({"ig-webhook-1", "ig-webhook-2"}, set(senders))
+        self.assertEqual("https://graph.instagram.com/v24.0/ig-send-1/messages",
+                         senders["ig-webhook-1"].endpoint)
+        self.assertEqual("https://graph.instagram.com/v24.0/ig-send-2/messages",
+                         senders["ig-webhook-2"].endpoint)
+        self.assertEqual(("token-1", "token-2"),
+                         (senders["ig-webhook-1"].access_token,
+                          senders["ig-webhook-2"].access_token))
+
     def test_official_request_contract_uses_bearer_token(self):
         captured = {}
 
@@ -98,18 +118,22 @@ class DeliveryFlowTests(unittest.TestCase):
         self.conn.close()
         self.tmp.cleanup()
 
-    def enqueue(self, message_id="ig-1", text="Hola", sender="ig-user"):
+    def enqueue(self, message_id="ig-1", text="Hola", sender="ig-user",
+                recipient="ig-business"):
         return JobQueue(self.conn).enqueue(NormalizedEvent(
             channel="instagram", external_message_id=message_id, sender=sender,
-            recipient="ig-business", subject="Instagram DM", body_text=text,
-            work_key=f"instagram:ig-business:{sender}",
+            recipient=recipient, subject="Instagram DM", body_text=text,
+            work_key=f"instagram:{recipient}:{sender}",
         ))
 
     def test_live_dm_is_generated_delivered_and_visible_in_history(self):
         self.enqueue()
         set_mode(self.conn, "live", "test")
         sender = FakeSender()
-        worker = Executor(self.conn, agent_provider=SafeProvider(), instagram_sender=sender)
+        worker = Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-business": sender},
+        )
         self.assertTrue(worker.run_once("worker.test"))
         self.assertEqual("pending", self.conn.execute("SELECT status FROM deliveries").fetchone()[0])
         self.assertTrue(worker.run_once("worker.test"))
@@ -128,7 +152,10 @@ class DeliveryFlowTests(unittest.TestCase):
     def test_shadow_keeps_safe_reply_as_draft_without_sender_call(self):
         self.enqueue()
         sender = FakeSender()
-        Executor(self.conn, agent_provider=SafeProvider(), instagram_sender=sender).run_once("worker")
+        Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-business": sender},
+        ).run_once("worker")
         self.assertEqual(0, self.conn.execute("SELECT count(*) FROM deliveries").fetchone()[0])
         self.assertEqual("pending", self.conn.execute("SELECT status FROM action_reviews").fetchone()[0])
         self.assertEqual([], sender.calls)
@@ -137,7 +164,10 @@ class DeliveryFlowTests(unittest.TestCase):
         self.enqueue(text="Em reserves una taula VIP?")
         set_mode(self.conn, "live", "test")
         sender = FakeSender()
-        Executor(self.conn, agent_provider=SafeProvider(), instagram_sender=sender).run_once("worker")
+        Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-business": sender},
+        ).run_once("worker")
         self.assertEqual("escalated", self.conn.execute(
             "SELECT outcome FROM policy_decisions"
         ).fetchone()[0])
@@ -146,14 +176,20 @@ class DeliveryFlowTests(unittest.TestCase):
         self.enqueue("ig-2", "Hola de nou")
         conversation_id = self.conn.execute("SELECT id FROM conversations").fetchone()[0]
         set_bot_paused(self.conn, conversation_id, True, "test", "manual")
-        Executor(self.conn, agent_provider=SafeProvider(), instagram_sender=sender).run_once("worker")
+        Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-business": sender},
+        ).run_once("worker")
         self.assertEqual([], sender.calls)
 
     def test_ambiguous_delivery_pauses_bot_for_reconciliation(self):
         self.enqueue()
         set_mode(self.conn, "live", "test")
         sender = FakeSender(InstagramSendError("instagram_delivery_unknown", ambiguous=True))
-        worker = Executor(self.conn, agent_provider=SafeProvider(), instagram_sender=sender)
+        worker = Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-business": sender},
+        )
         worker.run_once("worker")
         worker.run_once("worker")
         self.assertEqual("unknown", self.conn.execute("SELECT status FROM deliveries").fetchone()[0])
@@ -167,12 +203,55 @@ class DeliveryFlowTests(unittest.TestCase):
         set_mode(self.conn, "live", "test")
         delivery_id = create_human_reply(self.conn, conversation_id, "Resposta humana", "dashboard:admin")
         sender = FakeSender()
-        Executor(self.conn, agent_provider=SafeProvider(), instagram_sender=sender).run_once("worker")
+        Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-business": sender},
+        ).run_once("worker")
         self.assertEqual("sent", self.conn.execute(
             "SELECT status FROM deliveries WHERE id=?", (delivery_id,)
         ).fetchone()[0])
         self.assertEqual("human", self.conn.execute(
             "SELECT author_type FROM conversation_messages WHERE direction='outbound'"
+        ).fetchone()[0])
+
+    def test_each_receiving_account_uses_only_its_mapped_sender(self):
+        first_sender, second_sender = FakeSender(), FakeSender()
+        worker = Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={
+                "ig-business-a": first_sender,
+                "ig-business-b": second_sender,
+            },
+        )
+        set_mode(self.conn, "live", "test")
+        self.enqueue("ig-a", sender="ig-user-a", recipient="ig-business-a")
+        self.assertTrue(worker.run_once("worker"))
+        self.assertTrue(worker.run_once("worker"))
+        self.enqueue("ig-b", sender="ig-user-b", recipient="ig-business-b")
+        self.assertTrue(worker.run_once("worker"))
+        self.assertTrue(worker.run_once("worker"))
+        self.assertEqual([("ig-user-a", "Hola! Com et podem ajudar?")], first_sender.calls)
+        self.assertEqual([("ig-user-b", "Hola! Com et podem ajudar?")], second_sender.calls)
+        self.assertEqual(
+            [("ig-business-a", "sent"), ("ig-business-b", "sent")],
+            [tuple(row) for row in self.conn.execute(
+                "SELECT sender_account_id,status FROM deliveries ORDER BY sender_account_id"
+            )],
+        )
+
+    def test_unmapped_receiving_account_never_uses_another_sender(self):
+        wrong_sender = FakeSender()
+        self.enqueue(recipient="ig-unmapped")
+        set_mode(self.conn, "live", "test")
+        worker = Executor(
+            self.conn, agent_provider=SafeProvider(),
+            instagram_senders={"ig-other": wrong_sender},
+        )
+        self.assertTrue(worker.run_once("worker"))
+        self.assertEqual([], wrong_sender.calls)
+        self.assertEqual(0, self.conn.execute("SELECT count(*) FROM deliveries").fetchone()[0])
+        self.assertEqual("pending", self.conn.execute(
+            "SELECT status FROM action_reviews"
         ).fetchone()[0])
 
 

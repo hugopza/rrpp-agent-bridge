@@ -1,0 +1,35 @@
+[Unit]
+Description=rrpp-agent-bridge durable worker
+After=network-online.target docker.service
+Wants=network-online.target
+RequiresMountsFor=/opt/rrpp-agent-bridge/var
+
+[Service]
+Type=simple
+User=rrpp
+Group=rrpp
+WorkingDirectory=/opt/rrpp-agent-bridge
+EnvironmentFile=/etc/rrpp-agent-bridge/rrpp.env
+ExecStart=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge worker
+ExecStartPost=/usr/bin/sleep 2
+ExecStartPost=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge healthcheck worker
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=35s
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/opt/rrpp-agent-bridge/var /opt/rrpp-agent-bridge/backups /opt/rrpp-agent-bridge/backup-export
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

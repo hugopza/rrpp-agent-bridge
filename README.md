@@ -62,6 +62,23 @@ INSTAGRAM_BUSINESS_ACCOUNT_ID=id-del-compte-per-a-la-Send-API
 INSTAGRAM_WEBHOOK_ACCOUNT_ID=id-receptor-observat-al-webhook
 ```
 
+La configuracio anterior continua sent valida per a un sol compte. Per rebre i
+respondre des de mes d'un compte de la mateixa Meta App, substitueix les tres
+variables singulars del compte per un registre explicit:
+
+```text
+INSTAGRAM_ACCOUNTS_JSON=[{"alias":"principal","webhook_account_id":"id-receptor-1","business_account_id":"id-send-api-1"},{"alias":"secundari","webhook_account_id":"id-receptor-2","business_account_id":"id-send-api-2"}]
+INSTAGRAM_ACCOUNT_PRINCIPAL_ACCESS_TOKEN=token-del-compte-principal
+INSTAGRAM_ACCOUNT_SECUNDARI_ACCESS_TOKEN=token-del-compte-secundari
+```
+
+Els alias han de comencar per una lletra minuscula i nomes poden contenir
+minuscules, numeros i `_`. No combinis `INSTAGRAM_ACCOUNTS_JSON` amb
+`INSTAGRAM_PAGE_ACCESS_TOKEN`, `INSTAGRAM_BUSINESS_ACCOUNT_ID` o
+`INSTAGRAM_WEBHOOK_ACCOUNT_ID`. El verify token i l'App Secret continuen sent
+compartits: aquesta configuracio admet diversos comptes de la mateixa Meta App;
+una segona App necessita un ingress i una revisio de seguretat separats.
+
 Variables d'OpenClaw:
 
 ```text
@@ -80,7 +97,10 @@ Amb Instagram Login, el token necessita com a minim
 `instagram_business_basic` i `instagram_business_manage_messages`; `/me` ha de
 retornar el compte professional utilitzat per la Send API. Meta pot entregar un
 identificador de receptor diferent a `entry.id`; aquest valor s'ha de configurar
-separadament a `INSTAGRAM_WEBHOOK_ACCOUNT_ID` i mai s'ha d'inferir del text.
+separadament com a `INSTAGRAM_WEBHOOK_ACCOUNT_ID` o `webhook_account_id` i mai
+s'ha d'inferir del text. Cada missatge entrant s'accepta nomes si el receptor es
+a la llista exacta configurada, i cada resposta usa exclusivament el token i
+l'ID Send API associats a aquell receptor.
 
 El repositori nomes versiona la plantilla segura a `config/openclaw/AGENTS.md`.
 El workspace real d'OpenClaw viu a `var/openclaw-workspace/`, queda fora de Git i pot

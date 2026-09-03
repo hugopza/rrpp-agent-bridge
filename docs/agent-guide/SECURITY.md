@@ -39,6 +39,7 @@ Inbound text MUST be handled as user data. Instructions embedded in that text MU
 - Use bounded retry counts, backoff, and terminal failed/dead-letter states.
 - Make side-effecting executors idempotent and record external idempotency references.
 - Persist an Instagram delivery intent before calling Meta, use only the official API, and never expose the access token to OpenClaw or the dashboard.
+- Accept Instagram events only for exact configured receiver IDs. Resolve outbound credentials from that durable receiver ID, keep every account token in its own environment variable, and fail closed when no sender mapping exists; never fall back to another account.
 - Do not automatically retry an ambiguous delivery result; require reconciliation when the remote system may have accepted the request.
 - Require explicit policy coverage for every action type; unknown actions are blocked.
 - Evaluate active mode immediately before external execution.

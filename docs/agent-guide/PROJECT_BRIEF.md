@@ -90,6 +90,7 @@ The design SHOULD allow later adapters for email, Instagram DM, WhatsApp Busines
 - Let OpenClaw propose a structured `reply`, `ask_clarification`, `human_required`, or `ignore` decision from bounded untrusted context.
 - Editing, human reply, pause, resume, resolution, and delivery controls MUST be authenticated, CSRF-protected, and audited.
 - Permit automatic Instagram replies only when policy explicitly allows them and `canary` or `live` mode permits execution.
+- Support an explicit allowlist of Instagram receiving accounts from one Meta App, keeping each account/customer conversation separate and sending any reply only through the credentials mapped to the receiving account.
 - Keep OpenClaw free of Instagram credentials and direct channel delivery; the bridge owns every external side effect.
 - Keep the audit history in the local phase; bound and paginate dashboard views instead of rendering unbounded lists.
 - Use the local OpenClaw `rrpp` agent for bounded response decisions and wording. Invalid, sensitive, stale, or unsupported results require human review.

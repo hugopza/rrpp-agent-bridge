@@ -79,6 +79,7 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 - Cause: The batch was assembled from naming assumptions instead of only paths returned by `rg --files`.
 - Correction: Inventory repository paths first, then read only confirmed results; split optional reads so one missing file cannot hide all useful output.
 - Prevention: A batched inspection may contain only previously confirmed paths and commands expected to return zero. Run optional no-match scans separately. This rule applies to tests as well as source and migration files.
+- Recurrence: On 2026-08-06, a grouped documentation read guessed `docker-compose.yml` instead of inventorying root files. The repository was then inventoried and the confirmed `compose.yaml` path used.
 
 ### 2026-07-16 - Cross-file patch structure and fragile UI context failed
 

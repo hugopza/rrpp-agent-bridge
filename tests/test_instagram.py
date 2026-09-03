@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 from rrpp_bridge.adapters.instagram import normalize
-from rrpp_bridge.config import Settings
+from rrpp_bridge.config import InstagramAccountSettings, Settings, load_local_env
 from rrpp_bridge.db import connect, initialize
 from rrpp_bridge.executor import Executor
 from rrpp_bridge.instagram_webhook import InstagramWebhookApplication
@@ -57,7 +58,8 @@ class InstagramWebhookTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def request(self, method: str, *, query: str = "", body: bytes = b"",
-                signature: str | None = None, content_type: str = "application/json"):
+                signature: str | None = None, content_type: str = "application/json",
+                app: InstagramWebhookApplication | None = None):
         captured: dict[str, object] = {}
 
         def start_response(status, headers):
@@ -71,13 +73,13 @@ class InstagramWebhookTests(unittest.TestCase):
         }
         if signature is not None:
             environ["HTTP_X_HUB_SIGNATURE_256"] = signature
-        response = b"".join(self.app(environ, start_response))
+        response = b"".join((app or self.app)(environ, start_response))
         return str(captured["status"]), response
 
-    def signed_request(self, data: dict):
+    def signed_request(self, data: dict, app: InstagramWebhookApplication | None = None):
         body = json.dumps(data, separators=(",", ":")).encode()
         digest = hmac.new(b"app-secret", body, hashlib.sha256).hexdigest()
-        return self.request("POST", body=body, signature=f"sha256={digest}")
+        return self.request("POST", body=body, signature=f"sha256={digest}", app=app)
 
     def test_get_verification_accepts_only_matching_token_and_subscribe_mode(self):
         query = urlencode({"hub.mode": "subscribe", "hub.verify_token": "verify-me",
@@ -99,6 +101,28 @@ class InstagramWebhookTests(unittest.TestCase):
                           lambda value, _headers: status.append(value))
         self.assertEqual(("404 Not Found", b"Not found"), (status[0], b"".join(result)))
 
+    def test_healthcheck_is_private_route_ready_and_checks_configuration(self):
+        status: list[str] = []
+        result = self.app(
+            {"PATH_INFO": "/healthz", "REQUEST_METHOD": "GET"},
+            lambda value, _headers: status.append(value),
+        )
+        self.assertEqual(("200 OK", b"OK"), (status[0], b"".join(result)))
+
+        disabled = InstagramWebhookApplication(
+            Settings(database_path=self.path, mode="shadow", dashboard_user="",
+                     dashboard_password="", session_secret="")
+        )
+        status.clear()
+        result = disabled(
+            {"PATH_INFO": "/healthz", "REQUEST_METHOD": "GET"},
+            lambda value, _headers: status.append(value),
+        )
+        self.assertEqual(
+            ("503 Service Unavailable", b"Unavailable"),
+            (status[0], b"".join(result)),
+        )
+
     def test_enabled_connector_requires_complete_security_configuration(self):
         with patch.dict("os.environ", {"RRPP_INSTAGRAM_ENABLED": "true",
                                        "INSTAGRAM_VERIFY_TOKEN": "",
@@ -118,6 +142,124 @@ class InstagramWebhookTests(unittest.TestCase):
         conn = connect(self.path)
         self.assertEqual(1, conn.execute("SELECT count(*) FROM events").fetchone()[0])
         conn.close()
+
+    def test_multiple_configured_receiver_ids_are_accepted_and_separated(self):
+        settings = Settings(
+            database_path=self.path, mode="shadow", dashboard_user="", dashboard_password="",
+            session_secret="", instagram_enabled=True, instagram_verify_token="verify-me",
+            instagram_app_secret="app-secret", instagram_accounts=(
+                InstagramAccountSettings("primary", "ig-business-1", "ig-send-1"),
+                InstagramAccountSettings("secondary", "ig-business-2", "ig-send-2"),
+            ),
+        )
+        app = InstagramWebhookApplication(settings)
+        self.assertEqual("200 OK", self.signed_request(payload(), app=app)[0])
+        self.assertEqual("200 OK", self.signed_request(payload(
+            message_id="ig-mid-2", sender="ig-user-1", recipient="ig-business-2"
+        ), app=app)[0])
+        conn = connect(self.path)
+        self.assertEqual(
+            [("ig-business-1", "ig-user-1"), ("ig-business-2", "ig-user-1")],
+            [tuple(row) for row in conn.execute(
+                "SELECT recipient,sender FROM events ORDER BY recipient"
+            )],
+        )
+        self.assertEqual(2, conn.execute(
+            "SELECT count(*) FROM receiver_accounts WHERE channel='instagram'"
+        ).fetchone()[0])
+        self.assertEqual(2, conn.execute("SELECT count(*) FROM conversations").fetchone()[0])
+        conn.close()
+
+    def test_multi_account_environment_uses_independent_token_variables(self):
+        accounts = json.dumps([
+            {"alias": "primary", "webhook_account_id": "ig-webhook-1",
+             "business_account_id": "ig-send-1"},
+            {"alias": "secondary", "webhook_account_id": "ig-webhook-2",
+             "business_account_id": "ig-send-2"},
+        ])
+        with patch.dict("os.environ", {
+            "RRPP_INSTAGRAM_ENABLED": "true",
+            "RRPP_INSTAGRAM_SEND_ENABLED": "true",
+            "INSTAGRAM_VERIFY_TOKEN": "verify",
+            "INSTAGRAM_APP_SECRET": "secret",
+            "INSTAGRAM_ACCOUNTS_JSON": accounts,
+            "INSTAGRAM_ACCOUNT_PRIMARY_ACCESS_TOKEN": "token-primary",
+            "INSTAGRAM_ACCOUNT_SECONDARY_ACCESS_TOKEN": "token-secondary",
+        }, clear=True), patch("rrpp_bridge.config.load_local_env"):
+            settings = Settings.from_env(require_auth=False)
+        self.assertEqual(
+            [("primary", "ig-webhook-1", "ig-send-1", "token-primary"),
+             ("secondary", "ig-webhook-2", "ig-send-2", "token-secondary")],
+            [(account.alias, account.webhook_account_id, account.business_account_id,
+              account.access_token) for account in settings.configured_instagram_accounts()],
+        )
+        self.assertEqual(frozenset({"ig-webhook-1", "ig-webhook-2"}),
+                         settings.instagram_webhook_account_ids())
+
+    def test_legacy_single_account_environment_remains_supported(self):
+        with patch.dict("os.environ", {
+            "RRPP_INSTAGRAM_ENABLED": "true",
+            "RRPP_INSTAGRAM_SEND_ENABLED": "true",
+            "INSTAGRAM_VERIFY_TOKEN": "verify",
+            "INSTAGRAM_APP_SECRET": "secret",
+            "INSTAGRAM_WEBHOOK_ACCOUNT_ID": "ig-webhook-legacy",
+            "INSTAGRAM_BUSINESS_ACCOUNT_ID": "ig-send-legacy",
+            "INSTAGRAM_PAGE_ACCESS_TOKEN": "token-legacy",
+        }, clear=True), patch("rrpp_bridge.config.load_local_env"):
+            settings = Settings.from_env(require_auth=False)
+        self.assertEqual(
+            (InstagramAccountSettings(
+                "legacy", "ig-webhook-legacy", "ig-send-legacy", "token-legacy"
+            ),),
+            settings.configured_instagram_accounts(),
+        )
+
+    def test_env_loader_accepts_alias_derived_account_token_keys(self):
+        env_path = Path(self.tmp.name) / "multi-account.env"
+        env_path.write_text("INSTAGRAM_ACCOUNT_PRIMARY_ACCESS_TOKEN=value\n", encoding="utf-8")
+        with patch.dict("os.environ", {}, clear=True):
+            load_local_env(env_path)
+            self.assertEqual("value", os.environ[
+                "INSTAGRAM_ACCOUNT_PRIMARY_ACCESS_TOKEN"
+            ])
+
+    def test_multi_account_configuration_rejects_mixed_duplicate_and_missing_tokens(self):
+        valid = [
+            {"alias": "primary", "webhook_account_id": "ig-webhook-1",
+             "business_account_id": "ig-send-1"},
+            {"alias": "secondary", "webhook_account_id": "ig-webhook-2",
+             "business_account_id": "ig-send-2"},
+        ]
+        base = {
+            "RRPP_INSTAGRAM_ENABLED": "true",
+            "RRPP_INSTAGRAM_SEND_ENABLED": "true",
+            "INSTAGRAM_VERIFY_TOKEN": "verify",
+            "INSTAGRAM_APP_SECRET": "secret",
+            "INSTAGRAM_ACCOUNTS_JSON": json.dumps(valid),
+            "INSTAGRAM_ACCOUNT_PRIMARY_ACCESS_TOKEN": "token-primary",
+            "INSTAGRAM_ACCOUNT_SECONDARY_ACCESS_TOKEN": "token-secondary",
+        }
+        with patch("rrpp_bridge.config.load_local_env"):
+            with patch.dict("os.environ", {**base, "INSTAGRAM_BUSINESS_ACCOUNT_ID": "legacy"},
+                            clear=True):
+                with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                    Settings.from_env(require_auth=False)
+            duplicate = [dict(valid[0]), {**valid[1], "webhook_account_id": "ig-webhook-1"}]
+            with patch.dict("os.environ", {**base, "INSTAGRAM_ACCOUNTS_JSON": json.dumps(duplicate)},
+                            clear=True):
+                with self.assertRaisesRegex(ValueError, "must be unique"):
+                    Settings.from_env(require_auth=False)
+            inline_token = [{**valid[0], "access_token": "must-not-be-inline"}]
+            with patch.dict("os.environ", {
+                **base, "INSTAGRAM_ACCOUNTS_JSON": json.dumps(inline_token)
+            }, clear=True):
+                with self.assertRaisesRegex(ValueError, "contain only"):
+                    Settings.from_env(require_auth=False)
+            without_second_token = dict(base)
+            without_second_token.pop("INSTAGRAM_ACCOUNT_SECONDARY_ACCESS_TOKEN")
+            with patch.dict("os.environ", without_second_token, clear=True):
+                with self.assertRaisesRegex(ValueError, "secondary requires"):
+                    Settings.from_env(require_auth=False)
 
     def test_post_requires_valid_signature(self):
         body = json.dumps(payload()).encode()
@@ -162,7 +304,7 @@ class InstagramWebhookTests(unittest.TestCase):
         conn.close()
 
     def test_normalizes_and_persists_supported_message(self):
-        events, sanitized, ignored = normalize(payload(), "ig-business-1")
+        events, sanitized, ignored = normalize(payload(), {"ig-business-1", "ig-business-2"})
         self.assertEqual(0, ignored)
         self.assertEqual(("instagram", "ig-mid-1", "ig-user-1", "ig-business-1"),
                          (events[0].channel, events[0].external_message_id,

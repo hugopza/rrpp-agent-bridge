@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,9 +13,14 @@ def _timestamp(value: object) -> str:
     return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat(timespec="milliseconds")
 
 
-def normalize(payload: dict[str, Any], business_account_id: str) -> tuple[list[NormalizedEvent], dict[str, Any], int]:
+def normalize(payload: dict[str, Any], webhook_account_ids: Collection[str] | str) -> tuple[list[NormalizedEvent], dict[str, Any], int]:
     if payload.get("object") != "instagram" or not isinstance(payload.get("entry"), list):
         raise ValueError("Unsupported Instagram webhook payload")
+    allowed_accounts = (
+        frozenset({webhook_account_ids})
+        if isinstance(webhook_account_ids, str)
+        else frozenset(webhook_account_ids)
+    )
     events: list[NormalizedEvent] = []
     sanitized_entries: list[dict[str, Any]] = []
     ignored = 0
@@ -28,7 +34,7 @@ def normalize(payload: dict[str, Any], business_account_id: str) -> tuple[list[N
             sender = str((item.get("sender") or {}).get("id") or "").strip()
             recipient = str((item.get("recipient") or {}).get("id") or "").strip()
             message = item.get("message")
-            if recipient != business_account_id:
+            if recipient not in allowed_accounts:
                 ignored += 1
                 continue
             if not isinstance(message, dict) or message.get("is_echo") is True:

@@ -3,9 +3,10 @@ x-rrpp-service: &rrpp-service
   env_file:
     - ${RRPP_ENV_FILE:-.env.docker}
   environment:
-    RRPP_DATABASE_PATH: ${RRPP_DATABASE_PATH:-var/rrpp-bridge.db}
-    RRPP_BACKUP_DIR: ${RRPP_BACKUP_DIR:-/app/backups}
-    RRPP_BACKUP_EXPORT_DIR: ${RRPP_BACKUP_EXPORT_DIR:-/app/backup-export}
+    RRPP_DATABASE_PATH: /app/var/rrpp-bridge.db
+    RRPP_BACKUP_DIR: /app/backups
+    RRPP_BACKUP_EXPORT_DIR: /app/backup-export
+    RRPP_VENUE_KNOWLEDGE_DIR: /app/knowledge/venues
   restart: unless-stopped
   init: true
   read_only: true
@@ -20,6 +21,7 @@ x-rrpp-service: &rrpp-service
     - ./var:/app/var
     - ./backups:/app/backups
     - ./backup-export:/app/backup-export
+    - ./knowledge:/app/knowledge:ro
 
 services:
   web:
@@ -37,6 +39,7 @@ services:
 
   worker:
     <<: *rrpp-service
+    profiles: ["container-worker"]
     command: ["rrpp-bridge", "worker"]
     healthcheck:
       test: ["CMD", "rrpp-bridge", "healthcheck", "worker"]
@@ -61,6 +64,12 @@ services:
     command: ["gunicorn", "--bind", "0.0.0.0:8081", "--workers", "1", "--threads", "4", "--timeout", "30", "--graceful-timeout", "30", "rrpp_bridge.instagram_wsgi:application"]
     ports:
       - "127.0.0.1:${RRPP_INSTAGRAM_PUBLIC_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD", "rrpp-bridge", "healthcheck", "instagram"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   migrate:
     <<: *rrpp-service
