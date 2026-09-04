@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProductionDeploymentTests(unittest.TestCase):
     def test_compose_keeps_internal_ports_and_container_hardening(self):
         compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         for expected in (
             '"127.0.0.1:${RRPP_PUBLIC_PORT:-8080}:8080"',
             '"127.0.0.1:${RRPP_INSTAGRAM_PUBLIC_PORT:-8081}:8081"',
@@ -21,6 +22,7 @@ class ProductionDeploymentTests(unittest.TestCase):
             self.assertIn(expected, compose)
         self.assertNotIn('"8080:8080"', compose)
         self.assertNotIn('"8081:8081"', compose)
+        self.assertIn("USER 10001:10001", dockerfile)
 
     def test_nginx_exposes_only_the_exact_webhook_backend(self):
         nginx = (ROOT / "deploy" / "nginx" / "rrpp-agent-bridge.conf.example").read_text(
@@ -46,6 +48,31 @@ class ProductionDeploymentTests(unittest.TestCase):
             "ExecStartPost=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge healthcheck worker",
         ):
             self.assertIn(expected, unit)
+
+    def test_deploy_prepares_and_verifies_shared_storage_before_migration(self):
+        storage = (ROOT / "scripts" / "prepare-production-storage.sh").read_text(
+            encoding="utf-8"
+        )
+        deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+        for directory in ("var", "backups", "backup-export"):
+            self.assertIn(f'"${{APP_DIR}}/{directory}"', storage)
+        for expected in (
+            "CONTAINER_UID=${RRPP_CONTAINER_UID:-10001}",
+            "CONTAINER_GID=${RRPP_CONTAINER_GID:-10001}",
+            'runuser -u "${HOST_USER}"',
+            'setpriv --reuid="${CONTAINER_UID}" --regid="${CONTAINER_GID}"',
+            'find -P "${directory}" -type f -exec setfacl',
+            'find -P "${directory}" -type d -exec setfacl',
+            'default_acl="d:u:${HOST_USER}:rwx"',
+            "umask 0077",
+        ):
+            self.assertIn(expected, storage)
+
+        bootstrap = 'bash "${APP_DIR}/scripts/prepare-production-storage.sh"'
+        migration = '"${COMPOSE[@]}" --profile tools run --rm migrate'
+        self.assertIn(bootstrap, deploy)
+        self.assertLess(deploy.index(bootstrap), deploy.index(migration))
 
     def test_production_template_contains_no_example_secret_values(self):
         environment = (ROOT / ".env.production.example").read_text(encoding="utf-8")

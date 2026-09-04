@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-09-04 - Persistent storage supports distinct host and container identities
+
+- Status: Verified
+- Area: Ubuntu deployment and filesystem permissions
+- Fact: The host worker identity `rrpp` and container identity `10001:10001` share only `var/`, `backups/`, and `backup-export/` through explicit access ACLs and inherited default ACLs. The storage bootstrap is idempotent and performs real bidirectional file creation and append checks before migration.
+- Evidence: ADR-0016, `scripts/prepare-production-storage.sh`, its call from `scripts/deploy.sh`, and deployment contract tests.
+- Implication: Never fix shared storage by making containers root or assigning the directories exclusively to one runtime identity. Keep the ACL bootstrap and pre-migration verification together.
+
 ### 2026-09-03 - Account/catalog and recovery invariants are enforced
 
 - Status: Verified
@@ -32,7 +40,7 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 - Area: deployment and network boundaries
 - Fact: The Ubuntu 24.04 production topology runs the worker under system `systemd` so it can reach the authenticated OpenClaw Gateway exclusively through host loopback. Hardened Compose containers run web, Instagram ingress, and maintenance with loopback-only published ports; host Nginx proxies only the exact Instagram webhook path.
 - Evidence: ADR-0015, `deploy/systemd/`, `deploy/nginx/`, `compose.yaml`, and `scripts/deploy.sh`.
-- Implication: Do not move the worker into bridge-networked Compose or publish another Nginx path without a security review and accepted ADR. Preserve shared local SQLite ownership through host/container UID 10001.
+- Implication: Do not move the worker into bridge-networked Compose or publish another Nginx path without a security review and accepted ADR. Preserve shared local storage access through the ACL bootstrap defined by ADR-0016.
 
 ### 2026-08-06 - Instagram accounts use exact receiver-to-sender mappings
 

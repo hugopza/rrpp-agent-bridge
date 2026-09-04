@@ -21,6 +21,7 @@ systemctl stop rrpp-agent-bridge-healthcheck.timer
 systemctl stop rrpp-agent-bridge-worker.service
 "${COMPOSE[@]}" --profile instagram --profile container-worker stop \
   web worker maintenance instagram
+bash "${APP_DIR}/scripts/prepare-production-storage.sh"
 "${COMPOSE[@]}" --profile tools run --rm migrate
 "${COMPOSE[@]}" --profile instagram up -d --remove-orphans web maintenance instagram
 

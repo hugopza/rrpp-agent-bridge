@@ -32,7 +32,7 @@ TCP 80/443. Replica la mateixa política amb UFW:
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl git nginx python3.12-venv age ufw snapd
+sudo apt install -y acl age ca-certificates curl git nginx python3.12-venv snapd ufw util-linux
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow OpenSSH
@@ -63,8 +63,11 @@ La instal·lació oficial actual es documenta a
 
 ## 2. Usuari, checkout i directoris persistents
 
-El UID `10001` ha de coincidir amb l'usuari no privilegiat de la imatge. El
-checkout és de root i només els directoris de dades són escrivibles per `rrpp`:
+El contenidor conserva la identitat no privilegiada `10001:10001` i el worker
+de l'host conserva l'usuari `rrpp`. En una instal·lació nova poden coincidir,
+però els directoris persistents no depenen d'aquesta coincidència: el bootstrap
+aplica ACLs explícites i ACLs per defecte per a totes dues identitats. El checkout
+és de root i només els directoris de dades són compartits per escriptura:
 
 ```bash
 sudo groupadd --gid 10001 rrpp
@@ -72,11 +75,17 @@ sudo useradd --uid 10001 --gid 10001 --shell /usr/sbin/nologin \
   --home-dir /var/lib/rrpp-agent-bridge --create-home rrpp
 sudo git clone REPOSITORY_URL /opt/rrpp-agent-bridge
 cd /opt/rrpp-agent-bridge
-sudo install -d -o rrpp -g rrpp -m 0750 \
-  var backups backup-export
+sudo bash scripts/prepare-production-storage.sh
 sudo python3.12 -m venv .venv
 sudo .venv/bin/python -m pip install -e '.[deployment]'
 ```
+
+`prepare-production-storage.sh` crea `var/`, `backups/` i `backup-export/`,
+repara idempotentment les ACLs dels directoris i fitxers existents, configura
+ACLs per defecte per als fitxers nous i comprova escriptura creuada real entre
+`rrpp` i `10001:10001`. El mateix check s'executa automàticament en cada deploy,
+abans de la migració. Si `acl`, `setpriv`, l'usuari host o l'accés efectiu
+falten, el desplegament falla abans d'arrencar els serveis.
 
 No situïs `var`, `backups` o `backup-export` en emmagatzematge efímer.
 SQLite, els fitxers WAL/SHM i els backups han de quedar al mateix disc local; no
@@ -188,7 +197,8 @@ cap a 8080, 18789, `/healthz`, fitxers estàtics, SQLite o backups.
 ## 7. Primer desplegament i desplegaments posteriors
 
 El flux únic és pull, actualització del venv del worker, build, aturada breu,
-migrate, restart i healthcheck:
+preparació i verificació dels directoris persistents, migrate, restart i
+healthcheck:
 
 ```bash
 sudo bash /opt/rrpp-agent-bridge/scripts/deploy.sh
@@ -198,11 +208,12 @@ El script:
 
 1. fa `git pull --ff-only` i actualitza la instal·lació editable del worker;
 2. construeix una sola imatge compartida;
-3. atura els processos abans de tocar l'esquema i executa `rrpp-bridge migrate`
-   com a tasca explícita, amb backup previ si cal;
-4. manté aturat qualsevol worker de Compose i arrenca només web, maintenance i ingress;
-5. reinicia el worker de `systemd` i activa el timer;
-6. exigeix healthchecks correctes abans d'acabar.
+3. atura els processos i prepara/verifica idempotentment les ACLs de `var/`,
+   `backups/` i `backup-export/` per a `rrpp` i `10001:10001`;
+4. executa `rrpp-bridge migrate` com a tasca explícita, amb backup previ si cal;
+5. manté aturat qualsevol worker de Compose i arrenca només web, maintenance i ingress;
+6. reinicia el worker de `systemd` i activa el timer;
+7. exigeix healthchecks correctes abans d'acabar.
 
 Les aplicacions normals rebutgen una base amb migracions pendents; no apliquen
 migracions implícitament. Si falla una migració o un healthcheck, no activis una

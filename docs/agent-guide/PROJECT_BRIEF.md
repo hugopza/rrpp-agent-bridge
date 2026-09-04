@@ -98,6 +98,7 @@ The design SHOULD allow later adapters for email, Instagram DM, WhatsApp Busines
 ## Confirmed Operational Deployment
 
 - Run web, Instagram ingress, worker, OpenClaw Gateway, and maintenance independently on one host.
+- Provision shared persistent directories idempotently with inherited access for the host `rrpp` worker and container identity `10001:10001`, and verify both identities can write before migrations or startup.
 - Keep the VPS dashboard bound to loopback and access it through an SSH tunnel.
 - Persist sanitized service health without exception text, credentials, or message content.
 - Create verified SQLite-native backups daily, retain seven daily and three monthly copies, and prepare public-key-encrypted exports for off-host storage.

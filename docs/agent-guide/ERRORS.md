@@ -16,6 +16,14 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-09-04 - Host ownership did not grant the container access to SQLite
+
+- Context: First Ubuntu/Hetzner deployment with the worker running as `rrpp` and hardened containers running as `10001:10001`.
+- Error: The container could start but opening the bind-mounted SQLite database failed with `PermissionError` because `var/`, `backups/`, and `backup-export/` were owned only for the host identity.
+- Cause: Production setup assumed the host `rrpp` account and container would always resolve to the same numeric identity, and it did not enforce inherited permissions for newly created files.
+- Correction: Add an idempotent root-run storage bootstrap that applies access and default POSIX ACLs for both identities, repairs existing content, and performs real cross-identity write probes before migration.
+- Prevention: Every initial install and deploy must run the storage bootstrap. Deployment contract tests must require it before migration; never repair this boundary by running containers as root or with an undocumented one-time command.
+
 ### 2026-07-29 - Disabled Gateway task and partial OpenClaw update blocked the dashboard
 
 - Context: Starting only the local OpenClaw Control UI after the project services had been stopped.
