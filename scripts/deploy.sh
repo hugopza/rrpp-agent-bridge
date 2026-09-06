@@ -10,6 +10,7 @@ APP_DIR=${RRPP_APP_DIR:-/opt/rrpp-agent-bridge}
 ENV_FILE=${RRPP_ENV_FILE:-/etc/rrpp-agent-bridge/rrpp.env}
 export RRPP_ENV_FILE="${ENV_FILE}"
 COMPOSE=(docker compose --project-directory "${APP_DIR}" --env-file "${ENV_FILE}")
+DEPLOY_STARTED_AT=$(date --utc +%Y-%m-%dT%H:%M:%SZ)
 
 test -f "${ENV_FILE}"
 test -x "${APP_DIR}/.venv/bin/rrpp-bridge"
@@ -46,6 +47,19 @@ systemctl is-active --quiet rrpp-agent-bridge-worker.service
 wait_for_health web
 wait_for_health maintenance
 wait_for_health instagram
+
+check_gunicorn_logs() {
+  local logs
+  logs=$("${COMPOSE[@]}" logs --since "${DEPLOY_STARTED_AT}" web instagram 2>&1)
+  if grep -Eqi \
+      'Control server error|Failed to start control socket|Read-only file system.*[/]home[/]rrpp[/]\.gunicorn' \
+      <<<"${logs}"; then
+    echo "Gunicorn attempted to create an unavailable control socket." >&2
+    return 1
+  fi
+}
+
+check_gunicorn_logs
 
 "${COMPOSE[@]}" ps
 systemctl --no-pager --full status rrpp-agent-bridge-worker.service

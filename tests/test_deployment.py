@@ -24,6 +24,25 @@ class ProductionDeploymentTests(unittest.TestCase):
         self.assertNotIn('"8081:8081"', compose)
         self.assertIn("USER 10001:10001", dockerfile)
 
+    def test_gunicorn_uses_only_tmpfs_and_disables_the_unused_control_socket(self):
+        compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("/tmp:size=32m,mode=1777", compose)
+        for command in (dockerfile, compose):
+            self.assertIn('"--no-control-socket"', command)
+            self.assertIn('"--worker-tmp-dir", "/tmp"', command)
+            self.assertNotIn("/home/rrpp/.gunicorn", command)
+        for expected in (
+            "check_gunicorn_logs",
+            "Control server error",
+            "Failed to start control socket",
+            "Read-only file system.*[/]home[/]rrpp[/]\\.gunicorn",
+            'logs --since "${DEPLOY_STARTED_AT}" web instagram',
+        ):
+            self.assertIn(expected, deploy)
+
     def test_nginx_exposes_only_the_exact_webhook_backend(self):
         nginx = (ROOT / "deploy" / "nginx" / "rrpp-agent-bridge.conf.example").read_text(
             encoding="utf-8"

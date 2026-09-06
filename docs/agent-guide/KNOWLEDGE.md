@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-09-06 - Gunicorn control sockets are disabled in read-only containers
+
+- Status: Verified
+- Area: Container runtime hardening
+- Fact: Gunicorn 26 creates a control socket below `$XDG_RUNTIME_DIR` or `$HOME/.gunicorn` by default. The bridge does not use `gunicornc`, so both WSGI containers disable that socket and place worker temporary files in the existing `/tmp` tmpfs.
+- Evidence: `Dockerfile`, `compose.yaml`, deployment contract test, and post-deploy log check.
+- Implication: Keep `--no-control-socket`, `--worker-tmp-dir /tmp`, the `/tmp` tmpfs, non-root UID `10001:10001`, and `read_only` together when changing either Gunicorn command.
+
 ### 2026-09-06 - Explicit production environment files are authoritative
 
 - Status: Verified

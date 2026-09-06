@@ -19,4 +19,4 @@ RUN python -m pip install ".[deployment]"
 USER 10001:10001
 EXPOSE 8080 8081
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "30", "--graceful-timeout", "30", "rrpp_bridge.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "30", "--graceful-timeout", "30", "--no-control-socket", "--worker-tmp-dir", "/tmp", "rrpp_bridge.wsgi:application"]

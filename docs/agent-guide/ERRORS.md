@@ -16,6 +16,14 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-09-06 - Gunicorn default control socket targeted a read-only home
+
+- Context: Running Gunicorn 26 for the web and Instagram WSGI applications in hardened read-only containers as UID/GID `10001:10001`.
+- Error: Gunicorn repeatedly logged `Read-only file system` while trying to create `/home/rrpp/.gunicorn` even though request serving remained healthy.
+- Cause: Gunicorn's enabled-by-default control server fell back to `$HOME/.gunicorn/gunicorn.ctl` because no writable XDG runtime directory existed.
+- Correction: Disable the unused control socket for both services, set the worker temporary directory to the existing `/tmp` tmpfs, and fail deployment if new container logs contain the known control-socket errors.
+- Prevention: Deployment tests must assert both Gunicorn commands, the tmpfs mount, retained container hardening, and the post-start log scan. Do not make the home directory writable or run the image as root to accommodate optional runtime control functionality.
+
 ### 2026-09-06 - Agent check silently used a stale disabled environment value
 
 - Context: Checking a healthy production OpenClaw Gateway whose worker configuration enabled the `rrpp` agent.

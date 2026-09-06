@@ -215,6 +215,12 @@ El script:
 6. reinicia el worker de `systemd` i activa el timer;
 7. exigeix healthchecks correctes abans d'acabar.
 
+Els processos Gunicorn de `web` i `instagram` desactiven el control socket que
+no utilitza el bridge i dirigeixen els fitxers temporals dels workers al tmpfs
+`/tmp`. Això permet mantenir la imatge `read_only` i l'usuari `10001:10001`
+sense crear `$HOME/.gunicorn`. El deploy també revisa els logs nous dels dos
+serveis i falla si detecta un intent de crear aquest control socket.
+
 Les aplicacions normals rebutgen una base amb migracions pendents; no apliquen
 migracions implícitament. Si falla una migració o un healthcheck, no activis una
 nova versió. Conserva el checkout o tag anterior per fer rollback, restaura el
