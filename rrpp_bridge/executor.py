@@ -180,6 +180,15 @@ class Executor:
                 record(self.conn, worker_id, "agent.generation_failed", "event", event["id"],
                        "manual_review", {"provider": self.agent_provider.provider_id,
                                          "code": provider_error})
+            elif self.agent_provider.provider_id == "deterministic":
+                record(self.conn, worker_id, "agent.provider_fallback", "event", event["id"],
+                       "manual_review", {"provider": "deterministic",
+                                         "code": "fallback_deterministic",
+                                         "reason": "disabled"})
+            elif not decision.structured:
+                record(self.conn, worker_id, "agent.generation_invalid", "event", event["id"],
+                       "manual_review", {"provider": self.agent_provider.provider_id,
+                                         "code": "invalid_response"})
             else:
                 record(self.conn, worker_id, "agent.generation_completed", "event", event["id"],
                        "proposed", {"provider": self.agent_provider.provider_id,

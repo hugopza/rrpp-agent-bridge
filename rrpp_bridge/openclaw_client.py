@@ -40,6 +40,7 @@ class OpenClawAgentProvider:
                 "Authorization": f"Bearer {self.gateway_token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "X-OpenClaw-Agent-Id": self.agent_id,
                 "X-OpenClaw-Message-Channel": context.channel,
             },
             method="POST",
@@ -48,14 +49,61 @@ class OpenClawAgentProvider:
             with self._opener(request, timeout=self.timeout_seconds) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except (socket.timeout, TimeoutError) as exc:
-            raise AgentProviderError("openclaw_timeout") from exc
+            raise AgentProviderError("unreachable", "timeout") from exc
         except HTTPError as exc:
-            raise AgentProviderError("openclaw_http_error") from exc
+            raise self._http_error(exc) from exc
         except (URLError, OSError) as exc:
-            raise AgentProviderError("openclaw_unavailable") from exc
+            raise AgentProviderError("unreachable") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
-            raise AgentProviderError("openclaw_response_too_large")
+            raise AgentProviderError("invalid_response", "response_too_large")
         return self._parse_response(raw, context)
+
+    def diagnose(self) -> None:
+        """Verify Gateway authentication and the configured agent target."""
+        request = Request(
+            f"{self.base_url}/v1/models",
+            headers={
+                "Authorization": f"Bearer {self.gateway_token}",
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except (socket.timeout, TimeoutError) as exc:
+            raise AgentProviderError("unreachable", "timeout") from exc
+        except HTTPError as exc:
+            raise self._http_error(exc) from exc
+        except (URLError, OSError) as exc:
+            raise AgentProviderError("unreachable") from exc
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise AgentProviderError("invalid_response", "models_response_too_large")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            models = payload["data"]
+            if not isinstance(models, list):
+                raise TypeError
+            ids = {
+                item["id"] for item in models
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+        except (KeyError, TypeError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise AgentProviderError("invalid_response", "models_response_invalid") from exc
+        if f"openclaw/{self.agent_id}" not in ids:
+            raise AgentProviderError("agent_missing")
+
+    @staticmethod
+    def _http_error(exc: HTTPError) -> AgentProviderError:
+        exc.close()
+        if exc.code in {401, 403, 429}:
+            diagnostic = "rate_limited" if exc.code == 429 else ""
+            return AgentProviderError("auth_failed", diagnostic)
+        if exc.code == 404:
+            return AgentProviderError("agent_missing")
+        if 400 <= exc.code < 500:
+            return AgentProviderError("invalid_response", f"http_{exc.code}")
+        return AgentProviderError("unreachable", f"http_{exc.code}")
 
     def _request_payload(self, context: AgentContext) -> dict[str, Any]:
         context_payload = {
@@ -171,9 +219,7 @@ class OpenClawAgentProvider:
                 "action", "text", "language", "reason_code", "referenced_items"
             }
             if not isinstance(arguments, dict):
-                raise AgentProviderError(
-                    "openclaw_invalid_response", "decision_not_object"
-                )
+                raise AgentProviderError("invalid_response", "decision_not_object")
             if set(arguments) != expected_fields:
                 safe_fields = {
                     value if isinstance(value, str)
@@ -182,9 +228,7 @@ class OpenClawAgentProvider:
                 }
                 missing = ",".join(sorted(expected_fields - safe_fields)) or "none"
                 extra = ",".join(sorted(safe_fields - expected_fields)) or "none"
-                raise AgentProviderError(
-                    "openclaw_invalid_response", f"missing={missing};extra={extra}"
-                )
+                raise AgentProviderError("invalid_response", f"missing={missing};extra={extra}")
             action = arguments["action"]
             text_value = arguments["text"]
             text = "" if text_value is None else text_value.strip()
@@ -211,5 +255,5 @@ class OpenClawAgentProvider:
                 references.append(ReferencedItem(*key))
         except (AttributeError, IndexError, KeyError, TypeError, UnicodeError, ValueError,
                 json.JSONDecodeError) as exc:
-            raise AgentProviderError("openclaw_invalid_response") from exc
+            raise AgentProviderError("invalid_response") from exc
         return AgentDecision(action, text, language, reason_code, tuple(references), structured)

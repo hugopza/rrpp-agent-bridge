@@ -16,6 +16,14 @@ Record mistakes that can recur or reveal a weakness in the development process. 
 
 ## Entries
 
+### 2026-09-06 - Agent check silently used a stale disabled environment value
+
+- Context: Checking a healthy production OpenClaw Gateway whose worker configuration enabled the `rrpp` agent.
+- Error: `agent-check` selected the deterministic provider and returned an unstructured manual-review decision even when the explicitly supplied production file enabled OpenClaw.
+- Cause: Explicit environment files used non-overriding dotenv semantics, so a stale inherited `OPENCLAW_ENABLED=false` took precedence. A direct interactive CLI also does not inherit the worker service's systemd `EnvironmentFile`.
+- Correction: Make an explicitly selected `--env-file` authoritative, fail `agent-check` on disabled or unstructured output, probe the authenticated model catalog, send the agent ID in both the model target and compatibility header, and classify sanitized failures.
+- Prevention: Production checks must pass the protected environment file explicitly. Tests must cover a stale ambient disable flag, provider parity with the worker, Gateway auth, missing agents, strict response parsing, and deterministic fallback auditing.
+
 ### 2026-09-04 - Host ownership did not grant the container access to SQLite
 
 - Context: First Ubuntu/Hetzner deployment with the worker running as `rrpp` and hardened containers running as `10001:10001`.

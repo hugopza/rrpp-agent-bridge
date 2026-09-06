@@ -10,6 +10,7 @@ from urllib.request import urlopen
 from wsgiref.simple_server import make_server
 
 from .agent_provider import AgentContext, AgentProviderError, build_agent_provider
+from .audit import record
 from .config import VALID_MODES, Settings, load_local_env
 from .db import (
     backup_database,
@@ -89,12 +90,21 @@ def main() -> None:
     healthcheck.add_argument("service", choices=("web", "worker", "maintenance", "instagram"))
     args = parser.parse_args()
     if args.env_file is not None:
-        load_local_env(args.env_file)
+        load_local_env(args.env_file, override=True)
     settings = Settings.from_env(require_auth=args.command == "web")
 
     if args.command == "agent-check":
         provider = build_agent_provider(settings)
+        if provider.provider_id == "deterministic":
+            print(json.dumps({
+                "provider": provider.provider_id, "status": "disabled",
+                "reason": "fallback_deterministic", "structured": False,
+            }, sort_keys=True))
+            raise SystemExit(1)
         try:
+            diagnose = getattr(provider, "diagnose", None)
+            if diagnose is not None:
+                diagnose()
             decision = provider.generate_decision(AgentContext(
                 correlation_id="agent-check", conversation_id="agent-check-v2",
                 channel="local", receiver_account_id="local-check",
@@ -102,14 +112,17 @@ def main() -> None:
                 incoming_message="Hola", history=(), catalog_items=(), bot_paused=False,
             ))
         except AgentProviderError as exc:
-            print(json.dumps({"provider": provider.provider_id, "error": exc.code,
+            print(json.dumps({"provider": provider.provider_id, "status": exc.code,
                               "diagnostic": exc.diagnostic}, sort_keys=True))
             raise SystemExit(1) from None
+        status = "healthy" if decision.structured else "invalid_response"
         print(json.dumps({
-            "provider": provider.provider_id, "action": decision.action,
+            "provider": provider.provider_id, "status": status, "action": decision.action,
             "language": decision.language, "reason_code": decision.reason_code,
             "structured": decision.structured, "text_length": len(decision.text),
         }, sort_keys=True))
+        if not decision.structured:
+            raise SystemExit(1)
         return
 
     if args.command == "backup":
@@ -234,6 +247,14 @@ def main() -> None:
         agent_provider = build_agent_provider(settings)
         instagram_senders = build_instagram_senders(settings)
         start_service(conn, "worker", instance)
+        provider_status = (
+            {"status": "disabled", "reason": "fallback_deterministic"}
+            if agent_provider.provider_id == "deterministic"
+            else {"status": "configured"}
+        )
+        record(conn, worker_id, "agent.provider_selected", "service", "worker",
+               provider_status["status"],
+               {"provider": agent_provider.provider_id, **provider_status})
         try:
             while True:
                 processed = process_one(conn, worker_id, settings.max_attempts,

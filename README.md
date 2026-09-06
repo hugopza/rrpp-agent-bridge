@@ -130,10 +130,12 @@ cmd /c openclaw gateway status
 La segona ordre no envia cap missatge. El resultat correcte inclou:
 
 ```json
-{"action":"reply","provider":"openclaw","reason_code":"greeting","structured":true}
+{"action":"reply","provider":"openclaw","reason_code":"greeting","status":"healthy","structured":true}
 ```
 
-No activis la resposta automatica si `structured` no es `true`.
+No activis la resposta automàtica si `status` no és `healthy` o `structured` no
+és `true`. En producció passa sempre el fitxer protegit amb `--env-file`; una
+shell directa no hereta l'`EnvironmentFile` del worker de systemd.
 
 ## Arrencar la demo
 

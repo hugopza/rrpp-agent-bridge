@@ -28,8 +28,13 @@ ENV_KEY = re.compile(
 INSTAGRAM_ACCOUNT_ALIAS = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
-def load_local_env(path: Path = Path(".env")) -> None:
-    """Load the project's minimal KEY=VALUE format without overriding process env."""
+def load_local_env(path: Path = Path(".env"), *, override: bool = False) -> None:
+    """Load the project's minimal KEY=VALUE format.
+
+    The implicit development ``.env`` keeps normal process-environment precedence.
+    A caller that selected an explicit, trusted environment file may make that file
+    authoritative with ``override=True``.
+    """
     if not path.is_file():
         return
     for number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
@@ -42,7 +47,8 @@ def load_local_env(path: Path = Path(".env")) -> None:
         key = key.strip()
         if key not in RRPP_ENV_KEYS and not ENV_KEY.fullmatch(key):
             raise ValueError(f"Invalid .env key on line {number}")
-        os.environ.setdefault(key, value.strip())
+        if override or key not in os.environ:
+            os.environ[key] = value.strip()
 
 
 @dataclass(frozen=True)

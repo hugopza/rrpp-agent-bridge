@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import socket
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from rrpp_bridge.agent_provider import AgentContext, AgentProviderError, ConversationTurn
+from rrpp_bridge.agent_provider import (
+    AgentContext,
+    AgentProviderError,
+    ConversationTurn,
+    build_agent_provider,
+)
+from rrpp_bridge.cli import main
 from rrpp_bridge.config import Settings
 from rrpp_bridge.db import connect, initialize
 from rrpp_bridge.executor import Executor
@@ -83,6 +92,7 @@ class OpenClawClientTests(unittest.TestCase):
         self.assertEqual("rrpp-bridge:v2:conv-1", payload["user"])
         self.assertEqual("Bearer gateway-secret",
                          captured["request"].headers["Authorization"])
+        self.assertEqual("rrpp", captured["request"].get_header("X-openclaw-agent-id"))
         self.assertEqual("submit_decision", payload["tools"][0]["function"]["name"])
         self.assertNotIn("gateway-secret", captured["request"].data.decode())
 
@@ -99,21 +109,36 @@ class OpenClawClientTests(unittest.TestCase):
 
     def test_rejects_unknown_catalog_reference(self):
         body = structured_response().replace(b"ven-1", b"invented")
-        with self.assertRaisesRegex(AgentProviderError, "openclaw_invalid_response"):
+        with self.assertRaisesRegex(AgentProviderError, "invalid_response"):
             self.provider(lambda *_args, **_kwargs: FakeResponse(body)).generate_decision(context())
 
     def test_timeout_and_http_errors_are_sanitized(self):
         def timeout(*_args, **_kwargs):
             raise socket.timeout("secret transport detail")
 
-        with self.assertRaisesRegex(AgentProviderError, "^openclaw_timeout$"):
+        with self.assertRaisesRegex(AgentProviderError, "^unreachable$"):
             self.provider(timeout).generate_decision(context())
 
         def http(request, *_args, **_kwargs):
             raise HTTPError(request.full_url, 500, "private body", {}, io.BytesIO(b"secret"))
 
-        with self.assertRaisesRegex(AgentProviderError, "^openclaw_http_error$"):
+        with self.assertRaisesRegex(AgentProviderError, "^unreachable$"):
             self.provider(http).generate_decision(context())
+
+    def test_diagnose_distinguishes_auth_and_missing_agent(self):
+        def auth(request, *_args, **_kwargs):
+            raise HTTPError(request.full_url, 401, "private body", {}, io.BytesIO(b"secret"))
+
+        with self.assertRaisesRegex(AgentProviderError, "^auth_failed$"):
+            self.provider(auth).diagnose()
+
+        models = json.dumps({"data": [{"id": "openclaw/default"}]}).encode()
+        with self.assertRaisesRegex(AgentProviderError, "^agent_missing$"):
+            self.provider(lambda *_args, **_kwargs: FakeResponse(models)).diagnose()
+
+    def test_diagnose_accepts_the_configured_agent_target(self):
+        models = json.dumps({"data": [{"id": "openclaw/rrpp"}]}).encode()
+        self.provider(lambda *_args, **_kwargs: FakeResponse(models)).diagnose()
 
     def test_enabled_config_requires_token_and_loopback(self):
         env = {
@@ -128,12 +153,70 @@ class OpenClawClientTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "loopback"):
                 Settings.from_env(require_auth=False)
 
+    def test_explicit_production_env_overrides_stale_disabled_process_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "rrpp.env"
+            env_file.write_text(
+                "OPENCLAW_ENABLED=true\n"
+                "OPENCLAW_BASE_URL=http://127.0.0.1:18789\n"
+                "OPENCLAW_AGENT_ID=rrpp\n"
+                "OPENCLAW_GATEWAY_TOKEN=gateway-secret\n",
+                encoding="utf-8",
+            )
+            captured_settings = []
+
+            class CheckedProvider:
+                provider_id = "openclaw"
+
+                def diagnose(self):
+                    return None
+
+                def generate_decision(self, _context):
+                    return AgentDecision("reply", "Hola!", "ca", "greeting", structured=True)
+
+            def provider_factory(settings):
+                captured_settings.append(settings)
+                return CheckedProvider()
+
+            output = io.StringIO()
+            argv = ["rrpp-bridge", "--env-file", str(env_file), "agent-check"]
+            with patch.dict(os.environ, {"OPENCLAW_ENABLED": "false"}, clear=True), \
+                    patch("rrpp_bridge.config.load_local_env"), \
+                    patch("rrpp_bridge.cli.build_agent_provider", side_effect=provider_factory), \
+                    patch.object(sys, "argv", argv), redirect_stdout(output):
+                main()
+            self.assertTrue(captured_settings[0].openclaw_enabled)
+            self.assertEqual("rrpp", captured_settings[0].openclaw_agent_id)
+            self.assertEqual("healthy", json.loads(output.getvalue())["status"])
+
+    def test_agent_check_reports_disabled_fallback_as_failure(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch("rrpp_bridge.config.load_local_env"), \
+                patch.object(sys, "argv", ["rrpp-bridge", "agent-check"]), \
+                redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            main()
+        self.assertEqual(1, raised.exception.code)
+        self.assertEqual(
+            {"provider": "deterministic", "reason": "fallback_deterministic",
+             "status": "disabled", "structured": False},
+            json.loads(output.getvalue()),
+        )
+
+    def test_worker_and_agent_check_build_the_same_enabled_provider(self):
+        settings = Settings(
+            Path("var/test.db"), "shadow", "", "", "",
+            openclaw_enabled=True, openclaw_gateway_token="gateway-secret",
+            openclaw_agent_id="rrpp",
+        )
+        provider = build_agent_provider(settings)
+        self.assertEqual(("openclaw", "rrpp"), (provider.provider_id, provider.agent_id))
+
 
 class FailingProvider:
     provider_id = "openclaw"
 
     def generate_decision(self, _context):
-        raise AgentProviderError("openclaw_timeout")
+        raise AgentProviderError("unreachable", "timeout")
 
 
 class CapturingProvider:
@@ -192,8 +275,37 @@ class OpenClawWorkerTests(unittest.TestCase):
         audit = " ".join(row[0] for row in self.conn.execute(
             "SELECT details_json FROM audit_log WHERE operation='agent.generation_failed'"
         ))
-        self.assertIn("openclaw_timeout", audit)
+        self.assertIn("unreachable", audit)
         self.assertNotIn("transport", audit)
+        self.assertNotIn("timeout", audit)
+        self.assertEqual(0, self.conn.execute(
+            "SELECT count(*) FROM audit_log WHERE operation='agent.provider_fallback'"
+        ).fetchone()[0])
+
+    def test_unstructured_openclaw_output_is_audited_as_invalid_and_never_sent(self):
+        class UnstructuredProvider:
+            provider_id = "openclaw"
+
+            def generate_decision(self, _context):
+                return AgentDecision(
+                    "human_required", "Text no estructurat", "unknown",
+                    "unstructured_provider_output", structured=False,
+                )
+
+        ingest_local(self.conn, self.payload("m-invalid", "Hola"))
+        self.assertTrue(Executor(
+            self.conn, agent_provider=UnstructuredProvider()
+        ).run_once("worker.test"))
+        row = self.conn.execute(
+            "SELECT outcome,details_json FROM audit_log "
+            "WHERE operation='agent.generation_invalid'"
+        ).fetchone()
+        self.assertEqual("manual_review", row["outcome"])
+        self.assertEqual(
+            {"provider": "openclaw", "code": "invalid_response"},
+            json.loads(row["details_json"]),
+        )
+        self.assertEqual(0, self.conn.execute("SELECT count(*) FROM deliveries").fetchone()[0])
 
 
 if __name__ == "__main__":

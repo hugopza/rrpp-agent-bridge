@@ -232,9 +232,31 @@ sudo -u rrpp -H /opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge \
 ```
 
 Confirma que `agent-check` retorna
-`structured: true`, que no hi ha jobs històrics pendents i que cada compte
+`provider: "openclaw"`, `status: "healthy"` i `structured: true`, que no hi ha
+jobs històrics pendents i que cada compte
 d'Instagram usa el token correcte. Canvia primer a `canary`; només després
 d'observar-lo passa a `live`.
+
+El fitxer indicat explícitament amb `--env-file` és autoritatiu, també si el
+shell ha heretat una variable antiga. No executis una comprovació de producció
+sense aquest argument: l'`EnvironmentFile` de systemd només s'injecta al servei
+worker i no passa automàticament a una shell interactiva.
+
+`agent-check` retorna codi de sortida diferent de zero i un estat sanititzat en
+aquests casos:
+
+- `disabled`: OpenClaw no està habilitat en la configuració que ha llegit el
+  procés; `reason` és `fallback_deterministic`.
+- `unreachable`: timeout, error de xarxa local o error 5xx del Gateway.
+- `auth_failed`: el Gateway ha rebutjat el bearer token amb 401 o 403.
+- `agent_missing`: `/v1/models` no anuncia `openclaw/rrpp`.
+- `invalid_response`: el Gateway o l'agent no compleix el contracte esperat,
+  inclosa una resposta de text no estructurada.
+
+El check consulta primer `/v1/models`, després envia la decisió a
+`/v1/chat/completions` amb `model=openclaw/rrpp` i
+`X-OpenClaw-Agent-Id: rrpp`. No imprimeix el token, el prompt ni el cos dels
+errors HTTP.
 
 ## 8. Dashboard privat i verificació de xarxa
 

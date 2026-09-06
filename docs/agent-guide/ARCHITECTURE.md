@@ -93,6 +93,13 @@ Instagram uses a separate public ingress process. It verifies the subscription t
 
 Decision generation uses the `AgentProvider` contract. OpenClaw calls only its authenticated loopback Chat Completions endpoint and receives bounded inbound text, recent conversation history, a language hint, and a bounded structured catalog snapshot. It must return `reply`, `ask_clarification`, `human_required`, or `ignore` with a validated reason and references. Plain-text or legacy output is review-only. It receives no connector credentials and cannot dispatch actions. Provider errors become sanitized pending escalations rather than lost jobs or external effects.
 
+Provider diagnostics keep configuration selection separate from transport and
+response failures. The deterministic provider is selected only when OpenClaw is
+disabled. Production checks and durable worker audit distinguish `disabled`,
+`fallback_deterministic`, `unreachable`, `auth_failed`, `agent_missing`, and
+`invalid_response` without retaining tokens, prompts, response bodies, or raw
+transport errors.
+
 The V1 technology stack and persistence choice are accepted in ADR-0002. Future API contracts, horizontal deployment topology, retention periods, and external connectors remain `Proposed` until recorded in `DECISIONS.md`.
 
 ## Implementation Mapping

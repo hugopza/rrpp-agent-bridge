@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import tempfile
@@ -69,6 +70,16 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(("draft", "pending"), tuple(self.conn.execute(
             "SELECT kind,status FROM action_reviews"
         ).fetchone()))
+        fallback = self.conn.execute(
+            "SELECT outcome,details_json FROM audit_log "
+            "WHERE operation='agent.provider_fallback'"
+        ).fetchone()
+        self.assertEqual("manual_review", fallback["outcome"])
+        self.assertEqual(
+            {"provider": "deterministic", "code": "fallback_deterministic",
+             "reason": "disabled"},
+            json.loads(fallback["details_json"]),
+        )
 
     def test_sensitive_request_is_escalated_and_never_executed(self):
         set_mode(self.conn, "live", "test")

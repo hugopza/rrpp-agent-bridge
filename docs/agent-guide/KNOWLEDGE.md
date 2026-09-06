@@ -18,6 +18,14 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 
 ## Verified Entries
 
+### 2026-09-06 - Explicit production environment files are authoritative
+
+- Status: Verified
+- Area: OpenClaw provider selection and diagnostics
+- Fact: A direct CLI process does not inherit the worker's systemd `EnvironmentFile`. An explicitly selected `--env-file` overrides stale ambient values, while the implicit development `.env` retains normal process-environment precedence. `agent-check` probes the authenticated agent catalog and treats deterministic or unstructured output as a failed check.
+- Evidence: `config.load_local_env`, `cli agent-check`, OpenClaw client and worker audit tests.
+- Implication: Run production diagnostics with the protected environment file explicitly and use the sanitized status to distinguish configuration, reachability, authentication, agent routing, and response-contract failures.
+
 ### 2026-09-04 - Persistent storage supports distinct host and container identities
 
 - Status: Verified
