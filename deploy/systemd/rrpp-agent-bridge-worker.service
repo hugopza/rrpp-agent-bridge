@@ -10,6 +10,7 @@ User=rrpp
 Group=rrpp
 WorkingDirectory=/opt/rrpp-agent-bridge
 EnvironmentFile=/etc/rrpp-agent-bridge/rrpp.env
+ExecStartPre=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge config-check
 ExecStart=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge worker
 ExecStartPost=/usr/bin/sleep 2
 ExecStartPost=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge healthcheck worker

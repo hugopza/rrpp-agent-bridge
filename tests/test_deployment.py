@@ -63,6 +63,7 @@ class ProductionDeploymentTests(unittest.TestCase):
             "NoNewPrivileges=true",
             "ProtectSystem=strict",
             "PrivateTmp=true",
+            "ExecStartPre=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge config-check",
             "ExecStart=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge worker",
             "ExecStartPost=/opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge healthcheck worker",
         ):

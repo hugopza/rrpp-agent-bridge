@@ -18,6 +18,17 @@ from .runtime_lock import DatabaseRuntimeLock
 MAX_BODY_BYTES = 262_144
 
 
+def _ignored_reason(duplicates: int, ignored_reasons: dict[str, int]) -> str:
+    reasons = set(ignored_reasons)
+    if duplicates:
+        reasons.add("duplicate_message")
+    if not reasons:
+        return "no_supported_events"
+    if len(reasons) == 1:
+        return reasons.pop()
+    return "multiple_reasons"
+
+
 class InstagramWebhookApplication:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -82,7 +93,7 @@ class InstagramWebhookApplication:
             payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("Payload must be an object")
-            events, sanitized, ignored = normalize(
+            events, sanitized, ignored_reasons = normalize(
                 payload, self.settings.instagram_webhook_account_ids()
             )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
@@ -97,7 +108,7 @@ class InstagramWebhookApplication:
                 ).fetchone()
                 if prior is not None:
                     record(conn, "adapter.instagram", "webhook.duplicate", "webhook_receipt",
-                           prior["id"], "ignored")
+                           prior["id"], "ignored", {"reason_code": "duplicate_webhook"})
                     return self._respond(start_response, "200 OK", "EVENT_RECEIVED")
                 accepted = duplicates = 0
                 queue = JobQueue(conn, self.settings.response_debounce_seconds)
@@ -107,6 +118,13 @@ class InstagramWebhookApplication:
                     duplicates += int(not created)
                 receipt_id = f"wh_{uuid.uuid4().hex}"
                 status = "accepted" if accepted else "ignored"
+                ignored = sum(ignored_reasons.values())
+                details: dict[str, object] = {
+                    "accepted": accepted, "duplicates": duplicates, "ignored": ignored,
+                    "ignored_reasons": ignored_reasons,
+                }
+                if status == "ignored":
+                    details["reason_code"] = _ignored_reason(duplicates, ignored_reasons)
                 conn.execute(
                     "INSERT INTO inbound_webhook_receipts VALUES(?,?,?,?,?,?,?,?,?)",
                     (receipt_id, "instagram", digest,
@@ -114,8 +132,7 @@ class InstagramWebhookApplication:
                      accepted, duplicates, ignored, utc_now()),
                 )
                 record(conn, "adapter.instagram", "webhook.received", "webhook_receipt",
-                       receipt_id, status, {"accepted": accepted, "duplicates": duplicates,
-                                            "ignored": ignored})
+                       receipt_id, status, details)
         except Exception:
             return self._respond(start_response, "500 Internal Server Error", "Temporary failure")
         finally:

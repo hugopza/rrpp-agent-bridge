@@ -38,7 +38,7 @@ class JobQueue:
         ).fetchone()
         if existing is not None:
             record(self.conn, f"adapter.{event.channel}", "event.duplicate", "event",
-                   existing["id"], "ignored")
+                   existing["id"], "ignored", {"reason_code": "duplicate_message"})
             return str(existing["id"]), False
         try:
             conversation_id = ensure_conversation(
@@ -83,7 +83,7 @@ class JobQueue:
             if row is None:
                 raise
             record(self.conn, f"adapter.{event.channel}", "event.duplicate", "event",
-                   row["id"], "ignored")
+                   row["id"], "ignored", {"reason_code": "duplicate_message"})
             return str(row["id"]), False
 
     def claim_next(self, worker_id: str, lease_seconds: int = 60) -> sqlite3.Row | None:

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import tempfile
 import unittest
-from io import BytesIO
+from contextlib import redirect_stdout
+from io import BytesIO, StringIO
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 
+from rrpp_bridge.cli import main as cli_main
 from rrpp_bridge.config import InstagramAccountSettings, Settings
 from rrpp_bridge.db import connect, initialize
-from rrpp_bridge.delivery import create_human_reply
+from rrpp_bridge.delivery import DeliveryExecutor, create_human_reply, enqueue_delivery
 from rrpp_bridge.executor import Executor
 from rrpp_bridge.instagram_sender import (
     InstagramSender,
@@ -111,6 +116,45 @@ class InstagramSenderTests(unittest.TestCase):
             self.assertEqual(ambiguous, caught.exception.ambiguous)
 
 
+class DeliveryConfigurationTests(unittest.TestCase):
+    def test_config_check_distinguishes_environment_default_from_persisted_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "config.db"
+            conn = connect(database)
+            initialize(conn)
+            initialize_mode(conn, "shadow")
+            conn.close()
+            env_file = Path(directory) / "rrpp.env"
+            env_file.write_text(
+                "\n".join((
+                    f"RRPP_DATABASE_PATH={database}",
+                    "RRPP_MODE=live",
+                    "RRPP_INSTAGRAM_ENABLED=true",
+                    "RRPP_INSTAGRAM_SEND_ENABLED=true",
+                    "INSTAGRAM_VERIFY_TOKEN=verify",
+                    "INSTAGRAM_APP_SECRET=app-secret",
+                    "INSTAGRAM_PAGE_ACCESS_TOKEN=access-token",
+                    "INSTAGRAM_BUSINESS_ACCOUNT_ID=ig-send",
+                    "INSTAGRAM_WEBHOOK_ACCOUNT_ID=ig-webhook",
+                )),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with patch.dict(os.environ, {}, clear=True), patch.object(
+                    sys, "argv",
+                    ["rrpp-bridge", "--env-file", str(env_file), "config-check"]
+            ), redirect_stdout(output):
+                cli_main()
+            result = json.loads(output.getvalue())
+
+        self.assertEqual("live", result["configured_mode"])
+        self.assertEqual("shadow", result["effective_mode"])
+        self.assertTrue(result["instagram_send_enabled"])
+        self.assertEqual((1, 1), (
+            result["configured_account_count"], result["accounts_with_access_token"],
+        ))
+
+
 class DeliveryFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -210,6 +254,8 @@ class DeliveryFlowTests(unittest.TestCase):
         Executor(
             self.conn, agent_provider=SafeProvider(),
             instagram_senders={"ig-business": sender},
+            instagram_send_enabled=True,
+            instagram_account_tokens={"ig-business": True},
         ).run_once("worker")
         self.assertEqual("sent", self.conn.execute(
             "SELECT status FROM deliveries WHERE id=?", (delivery_id,)
@@ -217,6 +263,99 @@ class DeliveryFlowTests(unittest.TestCase):
         self.assertEqual("human", self.conn.execute(
             "SELECT author_type FROM conversation_messages WHERE direction='outbound'"
         ).fetchone()[0])
+
+    def test_delivery_gate_reason_codes_cover_effective_configuration(self):
+        self.enqueue()
+        delivery_id = create_human_reply(
+            self.conn,
+            self.conn.execute("SELECT id FROM conversations").fetchone()[0],
+            "Resposta humana", "dashboard:admin",
+        )
+        delivery = self.conn.execute(
+            "SELECT * FROM deliveries WHERE id=?", (delivery_id,)
+        ).fetchone()
+        sender = FakeSender()
+
+        self.conn.execute("UPDATE policy_decisions SET outcome='blocked'")
+        executor = DeliveryExecutor(
+            self.conn, {"ig-business": sender}, frozenset(),
+            send_enabled=True, account_tokens={"ig-business": True},
+        )
+        self.assertEqual("policy_block", executor._permission_reason(delivery))
+        self.conn.execute("UPDATE policy_decisions SET outcome='allowed'")
+
+        self.assertEqual("mode_not_live", executor._permission_reason(delivery))
+        set_mode(self.conn, "canary", "test")
+        self.assertEqual("canary_restriction", executor._permission_reason(delivery))
+        set_mode(self.conn, "live", "test")
+
+        disabled = DeliveryExecutor(
+            self.conn, {}, frozenset(), send_enabled=False,
+            account_tokens={"ig-business": True},
+        )
+        self.assertEqual("send_disabled", disabled._permission_reason(delivery))
+        unconfigured = DeliveryExecutor(
+            self.conn, {}, frozenset(), send_enabled=True, account_tokens={},
+        )
+        self.assertEqual("account_not_configured", unconfigured._permission_reason(delivery))
+        missing_token = DeliveryExecutor(
+            self.conn, {}, frozenset(), send_enabled=True,
+            account_tokens={"ig-business": False},
+        )
+        self.assertEqual("missing_access_token", missing_token._permission_reason(delivery))
+
+        self.conn.execute(
+            "UPDATE deliveries SET recipient_external_id='' WHERE id=?", (delivery_id,)
+        )
+        delivery = self.conn.execute(
+            "SELECT * FROM deliveries WHERE id=?", (delivery_id,)
+        ).fetchone()
+        self.assertEqual("invalid_recipient", executor._permission_reason(delivery))
+
+    def test_suppressed_delivery_logs_reason_code(self):
+        self.enqueue()
+        delivery_id = create_human_reply(
+            self.conn,
+            self.conn.execute("SELECT id FROM conversations").fetchone()[0],
+            "Resposta humana", "dashboard:admin",
+        )
+        sender = FakeSender()
+        worker = DeliveryExecutor(
+            self.conn, {"ig-business": sender}, frozenset(),
+            send_enabled=True, account_tokens={"ig-business": True},
+        )
+
+        self.assertTrue(worker.run_once("worker"))
+        self.assertEqual([], sender.calls)
+        row = self.conn.execute(
+            "SELECT status,last_error_code FROM deliveries WHERE id=?", (delivery_id,)
+        ).fetchone()
+        self.assertEqual(("suppressed", "mode_not_live"), tuple(row))
+        audit = self.conn.execute(
+            "SELECT details_json FROM audit_log WHERE operation='delivery.suppressed'"
+        ).fetchone()
+        self.assertEqual("mode_not_live", json.loads(audit[0])["reason_code"])
+
+    def test_delivery_idempotency_is_audited(self):
+        self.enqueue()
+        conversation_id = self.conn.execute("SELECT id FROM conversations").fetchone()[0]
+        delivery_id = create_human_reply(
+            self.conn, conversation_id, "Resposta humana", "dashboard:admin"
+        )
+        action = self.conn.execute(
+            "SELECT action_id,sender_account_id,recipient_external_id,body_text "
+            "FROM deliveries WHERE id=?", (delivery_id,)
+        ).fetchone()
+        duplicate_id = enqueue_delivery(
+            self.conn, action["action_id"], conversation_id, "instagram",
+            action["sender_account_id"], action["recipient_external_id"],
+            action["body_text"], "human", "dashboard:admin",
+        )
+        self.assertEqual(delivery_id, duplicate_id)
+        audit = self.conn.execute(
+            "SELECT details_json FROM audit_log WHERE operation='delivery.duplicate'"
+        ).fetchone()
+        self.assertEqual("duplicate_idempotency", json.loads(audit[0])["reason_code"])
 
     def test_each_receiving_account_uses_only_its_mapped_sender(self):
         first_sender, second_sender = FakeSender(), FakeSender()

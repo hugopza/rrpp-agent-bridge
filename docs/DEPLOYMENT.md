@@ -111,6 +111,13 @@ Per a diversos comptes d'una mateixa Meta App, deixa buides les tres variables
 legacy i usa `INSTAGRAM_ACCOUNTS_JSON` més una variable
 `INSTAGRAM_ACCOUNT_<ALIAS>_ACCESS_TOKEN` per compte. No barregis els dos formats.
 
+Els DMs ignorats escriuen un `reason_code` segur al journal. Si apareix
+`account_not_configured`, compara la configuració amb els IDs no secrets de
+`entry[].id` i `messaging[].recipient.id` del lliurament de Meta i configura
+l'ID observat com a `webhook_account_id`; no copiïs el contingut, la signatura
+ni cap token als logs. `account_id_mismatch` indica que els dos camps apunten a
+dos comptes configurats diferents i el bridge falla tancat.
+
 Configura obligatòriament `RRPP_BACKUP_AGE_RECIPIENT` amb una clau pública
 `age`. La identitat privada corresponent no ha d'existir al VPS.
 
@@ -157,6 +164,34 @@ sudo systemctl status rrpp-agent-bridge-healthcheck.timer
 sudo journalctl -u rrpp-agent-bridge-worker.service -f
 sudo journalctl -u rrpp-agent-bridge-healthcheck.service --since today
 ```
+
+L'`ExecStartPre` del worker executa `rrpp-bridge config-check` amb el mateix
+`EnvironmentFile`, usuari i directori que el procés real. El JSON del journal
+mostra `configured_mode`, `effective_mode`, `instagram_send_enabled`, el nombre
+de comptes/senders i quants comptes tenen token, però mai els secrets. Comprova
+el mateix estat manualment amb:
+
+```bash
+sudo -u rrpp -H /opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge \
+  --env-file /etc/rrpp-agent-bridge/rrpp.env config-check
+```
+
+`RRPP_MODE` és només el valor inicial d'una base de dades nova. En una base
+existent, el gate d'enviament usa el mode persistent de SQLite. Si
+`configured_mode` és `live` però `effective_mode` no ho és, activa'l
+explícitament després de revisar els gates:
+
+```bash
+sudo -u rrpp -H /opt/rrpp-agent-bridge/.venv/bin/rrpp-bridge \
+  --env-file /etc/rrpp-agent-bridge/rrpp.env set-mode live
+sudo systemctl restart rrpp-agent-bridge-worker.service
+```
+
+Cada `delivery.suppressed` inclou un `reason_code` segur: `mode_not_live`,
+`send_disabled`, `canary_restriction`, `account_not_configured`,
+`missing_access_token`, `invalid_recipient`, `policy_block` o
+`idempotency_guard`. Els reintents idempotents d'una delivery ja existent es
+registren separadament com `delivery.duplicate` amb `duplicate_idempotency`.
 
 ## 6. HTTPS amb Nginx
 

@@ -19,6 +19,10 @@ def ingest_local(conn: sqlite3.Connection, payload: dict[str, Any],
 def process_one(conn: sqlite3.Connection, worker_id: str = "worker.local",
                 max_attempts: int = 3, lease_seconds: int = 60,
                 canary_senders: frozenset[str] = frozenset(),
-                agent_provider: AgentProvider | None = None, instagram_senders=None) -> bool:
+                agent_provider: AgentProvider | None = None, instagram_senders=None,
+                *, instagram_send_enabled: bool | None = None,
+                instagram_account_tokens=None) -> bool:
     return Executor(conn, max_attempts, lease_seconds, canary_senders,
-                    agent_provider, instagram_senders).run_once(worker_id)
+                    agent_provider, instagram_senders,
+                    instagram_send_enabled=instagram_send_enabled,
+                    instagram_account_tokens=instagram_account_tokens).run_once(worker_id)

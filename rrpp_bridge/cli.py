@@ -21,6 +21,7 @@ from .db import (
     prepare_runtime,
 )
 from .instagram_sender import build_instagram_senders
+from .observability import emit
 from .operations import (
     SERVICES,
     create_backup,
@@ -67,7 +68,7 @@ def main() -> None:
     parser.add_argument("--env-file", type=Path,
                         help="load configuration from this KEY=VALUE file")
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("init-db", "migrate", "status", "recover-stale", "web",
+    for command in ("init-db", "migrate", "status", "config-check", "recover-stale", "web",
                     "instagram-webhook", "agent-check"):
         sub.add_parser(command)
     mode_command = sub.add_parser("set-mode")
@@ -169,6 +170,22 @@ def main() -> None:
         return
 
     conn = _prepare(settings)
+    accounts = settings.configured_instagram_accounts()
+    account_tokens = {
+        account.webhook_account_id: bool(account.access_token) for account in accounts
+    }
+    effective_configuration = {
+        "configured_mode": settings.mode,
+        "effective_mode": get_mode(conn),
+        "instagram_send_enabled": settings.instagram_send_enabled,
+        "configured_account_count": len(accounts),
+        "sender_count": len(build_instagram_senders(settings)),
+        "accounts_with_access_token": sum(account_tokens.values()),
+    }
+    if args.command == "config-check":
+        print(json.dumps(effective_configuration, sort_keys=True))
+        conn.close()
+        return
     if args.command == "healthcheck":
         if args.service in {"web", "instagram"}:
             port = settings.port if args.service == "web" else settings.instagram_port
@@ -247,6 +264,7 @@ def main() -> None:
         agent_provider = build_agent_provider(settings)
         instagram_senders = build_instagram_senders(settings)
         start_service(conn, "worker", instance)
+        emit("worker.configuration", **effective_configuration)
         provider_status = (
             {"status": "disabled", "reason": "fallback_deterministic"}
             if agent_provider.provider_id == "deterministic"
@@ -259,7 +277,9 @@ def main() -> None:
             while True:
                 processed = process_one(conn, worker_id, settings.max_attempts,
                                         settings.lease_seconds, settings.canary_senders,
-                                        agent_provider, instagram_senders)
+                                        agent_provider, instagram_senders,
+                                        instagram_send_enabled=settings.instagram_send_enabled,
+                                        instagram_account_tokens=account_tokens)
                 now = time.monotonic()
                 if processed or now - last_heartbeat >= 10:
                     heartbeat(conn, "worker", instance, success=processed,

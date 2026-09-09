@@ -33,7 +33,8 @@ class Executor:
     def __init__(self, conn: sqlite3.Connection, max_attempts: int = 3,
                  lease_seconds: int = 60, canary_senders: frozenset[str] = frozenset(),
                  agent_provider: AgentProvider | None = None,
-                 instagram_senders=None):
+                 instagram_senders=None, *, instagram_send_enabled: bool | None = None,
+                 instagram_account_tokens=None):
         self.conn = conn
         self.max_attempts = max_attempts
         self.lease_seconds = lease_seconds
@@ -42,7 +43,8 @@ class Executor:
         self.action_executor = LocalActionExecutor(conn, canary_senders)
         self.agent_provider = agent_provider or DeterministicAgentProvider()
         self.delivery_executor = DeliveryExecutor(
-            conn, instagram_senders, canary_senders, lease_seconds
+            conn, instagram_senders, canary_senders, lease_seconds,
+            send_enabled=instagram_send_enabled, account_tokens=instagram_account_tokens,
         )
 
     @staticmethod

@@ -20,5 +20,11 @@ def record(conn: sqlite3.Connection, actor: str, operation: str, entity_type: st
         (utc_now(), actor, operation, entity_type, entity_id, outcome,
          json.dumps(details or {}, separators=(",", ":"))),
     )
-    emit("audit", actor=actor, operation=operation, entity_type=entity_type,
-         entity_id=entity_id, outcome=outcome)
+    log_fields: dict[str, Any] = {
+        "actor": actor, "operation": operation, "entity_type": entity_type,
+        "entity_id": entity_id, "outcome": outcome,
+    }
+    reason_code = (details or {}).get("reason_code")
+    if isinstance(reason_code, str):
+        log_fields["reason_code"] = reason_code
+    emit("audit", **log_fields)

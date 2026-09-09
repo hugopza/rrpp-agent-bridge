@@ -66,6 +66,22 @@ Never include secrets, credentials, personal data, raw customer messages, or pro
 - Evidence: ADR-0013, multi-account configuration, webhook, and delivery tests; the 70-test suite, bytecode compilation, wheel/sdist builds, and clean diff validation.
 - Implication: Add accounts with `INSTAGRAM_ACCOUNTS_JSON` plus one alias-derived token environment variable per account. Never add a default sender or inline tokens in the registry. A different Meta App requires a separate security review.
 
+### 2026-09-10 - Instagram webhook routing checks both Meta account fields
+
+- Status: Verified
+- Area: Instagram ingress and observability
+- Fact: Meta's message webhook envelope identifies the professional account in both `entry[].id` and `messaging[].recipient.id`. The signed inbound normalizer resolves the receiver only when at least one of those fields exactly matches a configured webhook account, rejects deliveries that name two different configured accounts, and records a bounded `reason_code` for every ignored webhook outcome.
+- Evidence: Meta's official Instagram API Postman collection, the Instagram normalizer and webhook audit implementation, and realistic `hola` DM regression tests.
+- Implication: Configure the webhook ID observed in either account field; do not derive it from message content. Diagnose ignored deliveries from `reason_code` (`account_not_configured`, `account_id_mismatch`, `echo_message`, `self_message`, unsupported or missing fields, and duplicate codes) without logging secrets or raw ignored content.
+
+### 2026-09-10 - Runtime mode is persistent, not an environment override
+
+- Status: Verified
+- Area: delivery gates and production diagnostics
+- Fact: `RRPP_MODE` seeds a new database, while every delivery gate reads the current mode persisted in SQLite. Changing only the systemd environment can therefore leave `configured_mode=live` and `effective_mode=shadow`; dashboard-created deliveries are then suppressed before the Meta HTTP sender. The worker's systemd `ExecStartPre` and startup log expose a secret-free effective configuration summary, and every suppressed delivery has a bounded `reason_code`.
+- Evidence: ADR-0003, runtime and delivery implementations, `config-check`, the worker systemd unit, and live/send-enabled plus suppression-reason regression tests.
+- Implication: Compare configured and effective mode after deployment. Change runtime mode deliberately with the authenticated dashboard or `rrpp-bridge --env-file /etc/rrpp-agent-bridge/rrpp.env set-mode live`; never make service restart silently override a persisted safety mode.
+
 ### 2026-07-16 - Structured OpenClaw decisions and bridge-owned delivery
 
 - Status: Verified

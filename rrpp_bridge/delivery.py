@@ -29,10 +29,14 @@ def enqueue_delivery(conn: sqlite3.Connection, action_id: str, conversation_id: 
     text = text.strip()
     if channel != "instagram" or author_type not in {"bot", "human"}:
         raise ValueError("Unsupported delivery target")
-    if not text or len(text) > 1_000 or not sender_account_id or not recipient_external_id:
+    if (not text or len(text) > 1_000 or not sender_account_id
+            or len(sender_account_id) > 200 or not recipient_external_id
+            or len(recipient_external_id) > 200):
         raise ValueError("Invalid delivery payload")
     existing = conn.execute("SELECT id FROM deliveries WHERE action_id=?", (action_id,)).fetchone()
     if existing:
+        record(conn, author_id, "delivery.duplicate", "delivery", existing["id"], "ignored",
+               {"reason_code": "duplicate_idempotency"})
         return str(existing["id"])
     delivery_id, timestamp = _id("del"), utc_now()
     conn.execute(
@@ -94,9 +98,16 @@ def create_human_reply(conn: sqlite3.Connection, conversation_id: str, text: str
 class DeliveryExecutor:
     def __init__(self, conn: sqlite3.Connection,
                  senders: Mapping[str, InstagramSender] | None,
-                 canary_senders: frozenset[str], lease_seconds: int = 60):
+                 canary_senders: frozenset[str], lease_seconds: int = 60,
+                 *, send_enabled: bool | None = None,
+                 account_tokens: Mapping[str, bool] | None = None):
         self.conn = conn
         self.senders = dict(senders or {})
+        self.send_enabled = bool(senders) if send_enabled is None else send_enabled
+        self.account_tokens = (
+            dict(account_tokens) if account_tokens is not None
+            else {account_id: True for account_id in self.senders}
+        )
         self.canary_senders = canary_senders
         self.lease_seconds = lease_seconds
 
@@ -173,7 +184,7 @@ class DeliveryExecutor:
                     (timestamp, delivery["conversation_id"]),
                 )
             record(self.conn, actor, "delivery.suppressed", "delivery", delivery["id"],
-                   "suppressed", {"reason": reason})
+                   "suppressed", {"reason": reason, "reason_code": reason})
 
     def _permission_reason(self, delivery: sqlite3.Row) -> str | None:
         context = self.conn.execute(
@@ -183,23 +194,35 @@ class DeliveryExecutor:
             "JOIN events e ON e.id=a.event_id WHERE d.id=?", (delivery["id"],),
         ).fetchone()
         if not context or context["outcome"] != "allowed":
-            return "policy_not_allowed"
+            return "policy_block"
         if delivery["author_type"] == "bot" and context["bot_paused"]:
-            return "conversation_paused"
+            return "policy_block"
         mode = get_mode(self.conn)
         if mode in {"shadow", "dry-run"}:
-            return f"mode_{mode.replace('-', '_')}"
+            return "mode_not_live"
         if mode == "canary" and delivery["recipient_external_id"].casefold() not in self.canary_senders:
-            return "canary_sender_not_allowed"
+            return "canary_restriction"
         if mode not in {"canary", "live"}:
-            return "invalid_mode"
+            return "mode_not_live"
+        recipient = str(delivery["recipient_external_id"] or "").strip()
+        if not recipient or len(recipient) > 200:
+            return "invalid_recipient"
+        if not self.send_enabled:
+            return "send_disabled"
+        sender_account_id = str(delivery["sender_account_id"] or "")
+        if sender_account_id not in self.account_tokens:
+            return "account_not_configured"
+        if not self.account_tokens[sender_account_id]:
+            return "missing_access_token"
+        if sender_account_id not in self.senders:
+            return "account_not_configured"
         if delivery["author_type"] == "bot":
             newer = self.conn.execute(
                 "SELECT 1 FROM events WHERE conversation_id=? AND rowid>? LIMIT 1",
                 (delivery["conversation_id"], context["event_rowid"]),
             ).fetchone()
             if newer:
-                return "newer_inbound_message"
+                return "idempotency_guard"
         return None
 
     def run_once(self, worker_id: str) -> bool:
@@ -211,10 +234,7 @@ class DeliveryExecutor:
         if reason:
             self._suppress(delivery, reason, worker_id)
             return True
-        sender = self.senders.get(str(delivery["sender_account_id"]))
-        if sender is None:
-            self._finish_error(delivery, "instagram_sender_not_configured", False, worker_id)
-            return True
+        sender = self.senders[str(delivery["sender_account_id"])]
         try:
             result = sender.send_text(
                 str(delivery["recipient_external_id"]), str(delivery["body_text"])

@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -305,7 +306,7 @@ class InstagramWebhookTests(unittest.TestCase):
 
     def test_normalizes_and_persists_supported_message(self):
         events, sanitized, ignored = normalize(payload(), {"ig-business-1", "ig-business-2"})
-        self.assertEqual(0, ignored)
+        self.assertEqual({}, ignored)
         self.assertEqual(("instagram", "ig-mid-1", "ig-user-1", "ig-business-1"),
                          (events[0].channel, events[0].external_message_id,
                           events[0].sender, events[0].recipient))
@@ -321,6 +322,45 @@ class InstagramWebhookTests(unittest.TestCase):
                          (receipt["accepted_count"], receipt["duplicate_count"], receipt["status"]))
         conn.close()
 
+    def test_realistic_plain_text_hola_dm_creates_event_and_job(self):
+        data = {
+            "object": "instagram",
+            "entry": [{
+                "id": "ig-business-1",
+                "time": 1_757_456_789_000,
+                "messaging": [{
+                    "sender": {"id": "ig-scoped-customer-1"},
+                    "recipient": {"id": "ig-business-1"},
+                    "timestamp": 1_757_456_788_321,
+                    "message": {"mid": "aWdf-realistic-mid", "text": "hola"},
+                }],
+            }],
+        }
+
+        self.assertEqual(("200 OK", b"EVENT_RECEIVED"), self.signed_request(data))
+        conn = connect(self.path)
+        event = conn.execute(
+            "SELECT sender,recipient,body_text,status FROM events"
+        ).fetchone()
+        self.assertEqual(
+            ("ig-scoped-customer-1", "ig-business-1", "hola", "queued"), tuple(event)
+        )
+        self.assertEqual(1, conn.execute("SELECT count(*) FROM jobs").fetchone()[0])
+        conn.close()
+
+    def test_allowlisted_entry_routes_dm_when_recipient_uses_other_meta_id(self):
+        data = payload(text="hola", recipient="ig-send-account-1")
+        data["entry"][0]["id"] = "ig-business-1"
+
+        self.assertEqual(("200 OK", b"EVENT_RECEIVED"), self.signed_request(data))
+        conn = connect(self.path)
+        event = conn.execute(
+            "SELECT sender,recipient,body_text FROM events"
+        ).fetchone()
+        self.assertEqual(("ig-user-1", "ig-business-1", "hola"), tuple(event))
+        self.assertEqual(1, conn.execute("SELECT count(*) FROM jobs").fetchone()[0])
+        conn.close()
+
     def test_duplicate_message_does_not_create_duplicate_job(self):
         first = payload()
         second = payload()
@@ -333,6 +373,24 @@ class InstagramWebhookTests(unittest.TestCase):
         self.assertEqual(1, conn.execute(
             "SELECT duplicate_count FROM inbound_webhook_receipts WHERE duplicate_count=1"
         ).fetchone()[0])
+        conn.close()
+
+    def test_exact_duplicate_webhook_is_ignored_with_reason(self):
+        data = payload(text="hola")
+        self.assertEqual("200 OK", self.signed_request(data)[0])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual("200 OK", self.signed_request(data)[0])
+
+        log = json.loads(output.getvalue().strip())
+        self.assertEqual(("webhook.duplicate", "ignored", "duplicate_webhook"), (
+            log["operation"], log["outcome"], log["reason_code"],
+        ))
+        conn = connect(self.path)
+        audit = conn.execute(
+            "SELECT details_json FROM audit_log WHERE operation='webhook.duplicate'"
+        ).fetchone()
+        self.assertEqual("duplicate_webhook", json.loads(audit[0])["reason_code"])
         conn.close()
 
     def test_account_centered_conversation_and_legacy_provider_never_send(self):
@@ -370,14 +428,50 @@ class InstagramWebhookTests(unittest.TestCase):
         conn.close()
 
     def test_wrong_recipient_is_ignored_and_remains_unpersisted_as_event(self):
-        status, _ = self.signed_request(payload(recipient="another-account"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status, _ = self.signed_request(payload(recipient="another-account"))
         self.assertEqual("200 OK", status)
         conn = connect(self.path)
         self.assertEqual(0, conn.execute("SELECT count(*) FROM events").fetchone()[0])
         self.assertEqual(("ignored", 1), tuple(conn.execute(
             "SELECT status,ignored_count FROM inbound_webhook_receipts"
         ).fetchone()))
+        audit = conn.execute(
+            "SELECT details_json FROM audit_log WHERE operation='webhook.received'"
+        ).fetchone()
+        self.assertEqual("account_not_configured", json.loads(audit[0])["reason_code"])
         conn.close()
+        log = json.loads(output.getvalue().strip())
+        self.assertEqual(("ignored", "account_not_configured"),
+                         (log["outcome"], log["reason_code"]))
+
+    def test_conflicting_configured_account_ids_fail_closed_with_reason(self):
+        data = payload(recipient="ig-business-2")
+        data["entry"][0]["id"] = "ig-business-1"
+        events, _sanitized, reasons = normalize(
+            data, {"ig-business-1", "ig-business-2"}
+        )
+        self.assertEqual([], events)
+        self.assertEqual({"account_id_mismatch": 1}, reasons)
+
+    def test_each_unsupported_dm_shape_has_an_explicit_reason(self):
+        cases = {
+            "echo_message": {"message": {"mid": "mid", "text": "hola", "is_echo": True}},
+            "unsupported_event": {"message": None, "read": {"mid": "mid"}},
+            "missing_sender": {"sender": {"id": ""}},
+            "missing_message_id": {"message": {"mid": "", "text": "hola"}},
+            "unsupported_message_content": {"message": {"mid": "mid", "attachments": []}},
+            "self_message": {"sender": {"id": "ig-business-1"}},
+        }
+        for reason_code, overrides in cases.items():
+            with self.subTest(reason_code=reason_code):
+                data = payload()
+                data["entry"][0]["messaging"][0].update(overrides)
+                events, sanitized, reasons = normalize(data, {"ig-business-1"})
+                self.assertEqual([], events)
+                self.assertEqual({reason_code: 1}, reasons)
+                self.assertEqual({reason_code: 1}, sanitized["ignored_reasons"])
 
 
 if __name__ == "__main__":
