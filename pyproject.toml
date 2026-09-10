@@ -12,7 +12,7 @@ quality = [
   "build==1.6.0",
   "mypy==2.3.1",
   "pip-audit==2.10.1",
-  "ruff==0.16.5",
+  "ruff==0.16.6",
 ]
 
 [project.scripts]
