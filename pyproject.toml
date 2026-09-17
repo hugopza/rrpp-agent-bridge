@@ -3,7 +3,7 @@ name = "rrpp-agent-bridge"
 version = "0.1.0"
 description = "Safe and observable bridge foundation for future promoter agents"
 requires-python = ">=3.12"
-dependencies = ["tzdata==2026.3"]
+dependencies = ["tzdata==2026.4"]
 
 [project.optional-dependencies]
 deployment = ["gunicorn==26.2.0"]
